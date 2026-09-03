@@ -2,6 +2,13 @@
 
 基于多数据源（mootdx + BaoStock + AKShare + 腾讯财经）+ DuckDB 的股票数据采集、存储和分析系统。
 
+## 数据来源
+**本项目的数据（DuckDB 数据库文件 `stock_data.duckdb`）来源于配套的本地采集项目**，该项目包含完整的数据采集、增量更新与存储逻辑。
+
+- **采集项目仓库**：[https://github.com/WZB1320/A-Shares-data.git](https://github.com/WZB1320/A-Shares-data.git)
+- **数据流转**：采集项目 → DuckDB 数据库 → 本项目的 API 服务对外提供数据查询
+- **更新机制**：如需获取最新行情或财报数据，请先运行采集项目进行增量更新，随后启动本 API 服务即可读取最新数据。
+
 ## 数据配置
 本项目只采集了部分股票相关数据，可以根据需要配置不同股票列表获取数据，配置方式在 `src/config.py` 中的 `STOCK_CODES` 列表。
 
@@ -73,9 +80,9 @@ A-Shares-data/
 │   └── backups/               # 数据库备份
 ├── logs/                   # 日志
 │   └── stock_collector.log      # 运行日志
-├── scripts/                # 脚本
-│   └── run_update.py           # 一键更新脚本
-└── tests/                  # 测试
+└── scripts/                # 脚本
+    ├── run_update.py           # 一键更新脚本
+    └── _archive/               # 归档的历史脚本
 ```
 
 ## 快速开始
@@ -98,14 +105,23 @@ STOCK_CODES = [
 START_DATE = "20160510"
 ```
 
-### 运行数据采集
+### 运行数据采集（一键更新至最新）
 ```bash
-cd Stockdata
+# 方式一：一键更新（Windows，双击 update_data.bat）
+#   脚本会自动: 停止 API(释放数据库写锁) → 增量采集13只股票 → 指标计算 → 备份 → 自动重启 API
+#   日志: logs\update_YYYYMMDD_HHMMSS.log
+
+# 方式二：命令行手动运行
 python -m src.main
+
+# 方式三：仅更新指定股票 / 指定日期区间（详见 scripts/run_update.py）
+python scripts/run_update.py --stocks sh600519 sz002843
 ```
 
 ### 启动 REST API 服务
 ```bash
+# 方式一：一键启动（Windows，双击 start_api.bat）
+# 方式二：命令行启动
 python -m api.main
 ```
 服务会自动检测可用端口（默认 8001），启动后访问 http://localhost:8001/docs 查看 Swagger 文档。
@@ -131,8 +147,11 @@ http://localhost:8001/redoc # Redoc
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/health` | GET | 服务健康检查 |
-| `/api/stocks` | GET | 获取所有股票列表 |
+| `/api/stocks` | GET | 获取所有股票列表(默认仅代码数组;传 `with_price=true` 可返回含最新收盘价等完整基础信息) |
+| `/api/basic_info` | GET | **批量获取股票基础信息(含最新收盘价 close_price)**,回测/研究项目取 `price_at_analysis` 请优先用此接口 |
 | `/api/latest` | GET | 获取最新数据日期（支持 `stock_code` 参数） |
+
+> 💡 回测闭环排雷提示：旧版本 `/api/stocks`、`/api/master` 均不含价格字段，会导致 `price_at_analysis` 全空。请改用 `/api/basic_info`，或调用 `/api/stocks?with_price=true`、`/api/master/{stock_code}`（已补齐 `close_price` 字段）。
 
 ### 行情与基本面接口
 | 接口 | 方法 | 说明 | 支持参数 |
@@ -197,14 +216,38 @@ GET /api/health
 
 #### 获取股票列表
 ```bash
-# 请求
+# 默认: 仅返回代码数组(向后兼容)
 GET /api/stocks
+# 返回: { "stocks": ["sh513700","sh600089",...], "count": 12 }
 
-# 返回
-{
-  "stocks": ["sh513700", "sh600089", "sh600276", ...],
-  "count": 12
-}
+# 推荐: 返回含最新收盘价的完整信息(回测项目取 price_at_analysis 请用此模式)
+GET /api/stocks?with_price=true
+GET /api/stocks?with_price=true&stock_codes=sh600519,sh600089
+# 返回: { "stocks": [{ "stock_code":"sh600519","stock_name":"贵州茅台","close_price":1361.33,"pct_chg":1.23,"pe_ttm":28.5,... }], "count": N, "note": "close_price 即最新收盘价,可直接用于回测 price_at_analysis 字段" }
+```
+
+#### 批量获取基础信息(含价格)—推荐回测项目使用
+```bash
+# 全部股票
+GET /api/basic_info
+
+# 按代码过滤
+GET /api/basic_info?stock_codes=sh600519,sh600089
+
+# 返回字段(关键字段):
+#  stock_code / stock_name / stock_name_cn / market / board / status / is_etf
+#  price_date / open_price / close_price(映射 price_at_analysis) / high_price / low_price
+#  volume / turnover / pct_chg / pe_ttm / pb
+#
+# 返回格式:
+# {
+#   "count": 2,
+#   "data": [
+#     { "stock_code":"sh600519","stock_name":"贵州茅台","close_price":1361.33,"pct_chg":1.23,... },
+#     ...
+#   ],
+#   "price_field_hint": "字段 close_price 即最新收盘价,外部项目可直接映射到 price_at_analysis"
+# }
 ```
 
 #### 获取最新数据日期

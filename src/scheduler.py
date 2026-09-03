@@ -2,10 +2,9 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.config import DB_PATH, PARQUET_DIR, BACKUP_DIR, START_DATE, STOCK_CODES
+from src.config import DB_PATH, BACKUP_DIR, START_DATE, STOCK_CODES
 from src.database.models import init_tables
 from src.database.operations import DatabaseOperations
-from src.database.parquet_store import ParquetStore
 from src.database.backup import BackupManager
 from src.collector.multi_source_collector import MultiSourceCollector
 from src.collector.baostock_collector import BaostockCollector
@@ -45,7 +44,6 @@ class Scheduler:
         DatabaseOperations.init_connection_manager(DB_PATH, read_pool_size=max_workers + 2)
 
         self.db_ops = DatabaseOperations()
-        self.parquet_store = ParquetStore(PARQUET_DIR)
         self.backup_manager = BackupManager(DB_PATH, BACKUP_DIR)
         self.max_workers = max_workers
 
@@ -71,6 +69,9 @@ class Scheduler:
         # ========== 阶段1: 并行采集 ==========
         self._collect_parallel(stock_codes)
 
+        # ========== 阶段1.5: 整体北向资金(不依赖个股,只执行一次) ==========
+        self._collect_northbound_market_flow()
+
         # ========== 阶段2: 串行计算指标 ==========
         self._calculate_indicators(stock_codes)
 
@@ -91,7 +92,7 @@ class Scheduler:
         # 由于 MultiSourceCollector 内部持有 mootdx/baostock/tencent/akshare 采集器
         # 而这些采集器现在都是线程安全的(threading.local / 全局锁 / 无状态)
         # 所以可以共享同一个 collector 实例
-        collector = MultiSourceCollector(self.db_ops, self.parquet_store, START_DATE)
+        collector = MultiSourceCollector(self.db_ops, START_DATE)
 
         with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="collector") as executor:
             futures = {
@@ -112,6 +113,14 @@ class Scheduler:
 
         # 采集完成后统一登出 BaoStock
         BaostockCollector.global_logout()
+
+    def _collect_northbound_market_flow(self):
+        """采集北向资金整体流向(独立于个股,只执行一次)"""
+        try:
+            collector = MultiSourceCollector(self.db_ops, START_DATE)
+            collector.akshare.collect_northbound_market_flow()
+        except Exception as e:
+            logger.error(f"北向资金整体流向采集失败: {e}", exc_info=True)
 
     def _collect_one_stock(self, collector: MultiSourceCollector, stock_code: str):
         """采集单只股票的所有数据(在线程中执行)"""

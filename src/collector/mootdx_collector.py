@@ -20,8 +20,8 @@ _client_local = threading.local()
 
 
 class MootdxCollector(BaseCollector):
-    def __init__(self, db_ops, parquet_store, start_date: str):
-        super().__init__(db_ops, parquet_store, start_date)
+    def __init__(self, db_ops, start_date: str):
+        super().__init__(db_ops, start_date)
         # 不再持有单例 _client,改用 threading.local
 
     # 通达信常用标准服务器
@@ -163,12 +163,10 @@ class MootdxCollector(BaseCollector):
 
         today_fmt = datetime.now().strftime("%Y-%m-%d")
         # 事务保证: 数据写入 + 水位更新 原子化
-        # Parquet 写入非事务性,但已有去重逻辑兜底,失败重跑会覆盖
         try:
             with self.db_ops.transaction():
                 self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
                 self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-            self.parquet_store.write_daily(df)
             logger.info(f"[mootdx] {stock_code} 日线数据完成，新增 {len(df)} 条")
             return True
         except Exception as e:
@@ -225,7 +223,6 @@ class MootdxCollector(BaseCollector):
                 with self.db_ops.transaction():
                     self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
                     self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-                self.parquet_store.write_daily(df)
                 logger.info(f"[AKShare回退] {stock_code} 日线数据完成，新增 {len(df)} 条")
                 return True
             except Exception as e:

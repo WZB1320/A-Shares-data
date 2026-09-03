@@ -28,6 +28,24 @@ class ValuationIndicatorCalculator(BaseIndicatorCalculator):
             ORDER BY report_date DESC
         """, (stock_code,))
 
+        # 找到最近年报(FY)的净利润和营收, 用于计算静态PE/PS
+        # 注意: report_type 全部是"合并期末", 无法区分年报/季报, 用 report_date 的月份判断
+        annual_net_profit = None
+        annual_total_revenue = None
+        for _, fr in df_financial.iterrows():
+            rd = fr.get('report_date')
+            if rd is None:
+                continue
+            rd_dt = pd.to_datetime(rd)
+            if rd_dt.month == 12 and rd_dt.day == 31:
+                np_val = self._safe_float(fr.get('net_profit'))
+                tr_val = self._safe_float(fr.get('total_revenue'))
+                if np_val is not None:
+                    annual_net_profit = np_val
+                if tr_val is not None:
+                    annual_total_revenue = tr_val
+                break
+
         df_capital = self.db_ops.query("""
             SELECT record_date, total_shares
             FROM stock_capital
@@ -103,11 +121,13 @@ class ValuationIndicatorCalculator(BaseIndicatorCalculator):
                 roe_ttm = roe_ttm_val
                 roe_annual = roe_annual_val
 
-                if net_profit is not None and net_profit != 0:
-                    pe_annual = market_cap / net_profit
+                # 静态PE/PS: 用最近年报净利润/营收, 而非当前报告期累计值
+                # 避免Q1报告期用1-3月净利润导致PE偏高4倍
+                if annual_net_profit is not None and annual_net_profit != 0:
+                    pe_annual = market_cap / annual_net_profit
 
-                if total_revenue is not None and total_revenue != 0:
-                    ps_annual = market_cap / total_revenue
+                if annual_total_revenue is not None and annual_total_revenue != 0:
+                    ps_annual = market_cap / annual_total_revenue
 
                 break
 

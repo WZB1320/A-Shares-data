@@ -109,17 +109,9 @@ class TencentCollector(BaseCollector):
                 """, (stock_code, today, pe_ttm, pb))
             logger.info(f"[tencent] {stock_code} 估值: PE(TTM)={pe_ttm}, PB={pb}")
 
-        # 更新股本数据(如果BaoStock没取到)
-        total_shares = data.get('total_shares')
-        if total_shares:
-            total_shares_int = int(total_shares * 10000)  # 腾讯返回的是万股
-            # 事务保证股本数据写入原子化
-            with self.db_ops.transaction():
-                self.db_ops.conn.execute("""
-                INSERT INTO stock_capital (stock_code, record_date, total_shares)
-                VALUES (?, ?, ?)
-                ON CONFLICT (stock_code, record_date) DO UPDATE SET total_shares = EXCLUDED.total_shares
-                """, (stock_code, today, total_shares_int))
+        # 注意: 腾讯接口索引45返回的是流通股本(万股), 不是总股本
+        # 总股本由 BaoStock 采集, 此处不再写入 stock_capital 避免覆盖正确数据
+        # 历史bug: 之前将流通股本*10000写入stock_capital, 导致total_shares偏小2个数量级
 
         return data
 

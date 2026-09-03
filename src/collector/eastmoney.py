@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class EastmoneyCollector(BaseCollector):
-    def __init__(self, db_ops, parquet_store, start_date: str):
-        super().__init__(db_ops, parquet_store, start_date)
+    def __init__(self, db_ops, start_date: str):
+        super().__init__(db_ops, start_date)
         self._init_column_metadata()
 
     def collect_stock(self, stock_code: str):
@@ -185,12 +185,11 @@ class EastmoneyCollector(BaseCollector):
         df["report_date"] = pd.to_datetime(df["report_date"]).dt.date
         df["announcement_date"] = pd.to_datetime(df["announcement_date"], errors="coerce").dt.date
 
-        # 事务保证: 财务数据写入 + Parquet + 水位更新 原子化
+        # 事务保证: 财务数据写入 + 水位更新 原子化
         try:
             with self.db_ops.transaction():
                 self._upsert_financial(df)
                 self.db_ops.update_last_update_date(stock_code, "financial", today_fmt)
-            self.parquet_store.write_financial(df)
             logger.info(f"[akshare] {stock_code} 财务数据完成，新增 {len(df)} 条")
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 财务数据写入失败,已回滚: {e}")
@@ -536,6 +535,76 @@ class EastmoneyCollector(BaseCollector):
                 logger.info(f"[akshare] {stock_code} 非沪深港通标的,无北向资金数据")
             else:
                 logger.warning(f"[akshare] {stock_code} 北向资金采集失败: {e}")
+
+    def collect_northbound_market_flow(self):
+        """采集北向资金整体流向(沪深港通合计)
+
+        数据源: ak.stock_hsgt_hist_em
+        注意: stock_hsgt_individual_em 个股接口数据只到2024-08-16,
+        此接口提供整体北向资金流向,数据到最新日期
+        """
+        from .rate_limiter import akshare_rate_limited
+
+        @akshare_rate_limited
+        def _fetch():
+            return ak.stock_hsgt_hist_em(symbol="北向资金")
+
+        try:
+            df = _fetch()
+            if df is None or df.empty:
+                logger.warning("[akshare] 北向资金整体流向数据为空")
+                return
+
+            # 字段映射
+            df = df.rename(columns={
+                "日期": "trade_date",
+                "当日成交净买额": "net_buy_amount",
+                "买入成交额": "buy_amount",
+                "卖出成交额": "sell_amount",
+                "历史累计净买额": "cumulative_net_buy",
+                "当日资金流入": "daily_inflow",
+                "当日余额": "daily_balance",
+                "持股市值": "holding_market_value",
+            })
+
+            df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+
+            # 选取目标列
+            cols = ["trade_date", "net_buy_amount", "buy_amount", "sell_amount",
+                    "cumulative_net_buy", "daily_inflow", "daily_balance", "holding_market_value"]
+            df = df[[c for c in cols if c in df.columns]].copy()
+
+            # 数值转换
+            for col in cols[1:]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            try:
+                with self.db_ops.transaction():
+                    self.db_ops.conn.register("df_nmf", df)
+                    self.db_ops.conn.execute("""
+                        INSERT INTO northbound_market_flow
+                        (trade_date, net_buy_amount, buy_amount, sell_amount,
+                         cumulative_net_buy, daily_inflow, daily_balance, holding_market_value)
+                        SELECT trade_date, net_buy_amount, buy_amount, sell_amount,
+                               cumulative_net_buy, daily_inflow, daily_balance, holding_market_value
+                        FROM df_nmf
+                        ON CONFLICT (trade_date) DO UPDATE SET
+                            net_buy_amount = EXCLUDED.net_buy_amount,
+                            buy_amount = EXCLUDED.buy_amount,
+                            sell_amount = EXCLUDED.sell_amount,
+                            cumulative_net_buy = EXCLUDED.cumulative_net_buy,
+                            daily_inflow = EXCLUDED.daily_inflow,
+                            daily_balance = EXCLUDED.daily_balance,
+                            holding_market_value = EXCLUDED.holding_market_value
+                    """)
+                    self.db_ops.conn.unregister("df_nmf")
+                logger.info(f"[akshare] 北向资金整体流向完成,共 {len(df)} 条")
+            except Exception as e:
+                logger.error(f"[akshare] 北向资金整体流向写入失败,已回滚: {e}")
+                raise
+        except Exception as e:
+            logger.warning(f"[akshare] 北向资金整体流向采集失败: {e}")
 
     def _init_column_metadata(self):
         conn = self.db_ops.conn

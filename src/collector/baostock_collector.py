@@ -25,8 +25,8 @@ _bs_global_lock = threading.Lock()
 
 
 class BaostockCollector(BaseCollector):
-    def __init__(self, db_ops, parquet_store, start_date: str):
-        super().__init__(db_ops, parquet_store, start_date)
+    def __init__(self, db_ops, start_date: str):
+        super().__init__(db_ops, start_date)
         self._logged_in = False
 
     def _ensure_login(self):

@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 class MultiSourceCollector(BaseCollector):
     """多数据源编排器 - 按数据类型选择最优数据源"""
 
-    def __init__(self, db_ops, parquet_store, start_date: str):
-        super().__init__(db_ops, parquet_store, start_date)
-        self.mootdx = MootdxCollector(db_ops, parquet_store, start_date)
-        self.baostock = BaostockCollector(db_ops, parquet_store, start_date)
-        self.tencent = TencentCollector(db_ops, parquet_store, start_date)
-        self.akshare = EastmoneyCollector(db_ops, parquet_store, start_date)
+    def __init__(self, db_ops, start_date: str):
+        super().__init__(db_ops, start_date)
+        self.mootdx = MootdxCollector(db_ops, start_date)
+        self.baostock = BaostockCollector(db_ops, start_date)
+        self.tencent = TencentCollector(db_ops, start_date)
+        self.akshare = EastmoneyCollector(db_ops, start_date)
 
     def collect_stock(self, stock_code: str):
         """按优先级依次采集各类型数据"""

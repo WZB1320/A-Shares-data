@@ -32,9 +32,8 @@ def retry(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0):
 
 
 class BaseCollector:
-    def __init__(self, db_ops, parquet_store, start_date: str):
+    def __init__(self, db_ops, start_date: str):
         self.db_ops = db_ops
-        self.parquet_store = parquet_store
         self.start_date = start_date
 
     def collect_all(self, stock_codes: list):

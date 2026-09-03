@@ -281,6 +281,21 @@ def init_tables(conn):
     )
     """)
 
+    # 北向资金整体流向(沪股通+深股通+北向合计)
+    # 数据源: ak.stock_hsgt_hist_em, 数据到2026年最新, 弥补个股接口只到2024-08的问题
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS northbound_market_flow (
+        trade_date DATE NOT NULL PRIMARY KEY,
+        net_buy_amount DECIMAL(18,4),
+        buy_amount DECIMAL(18,4),
+        sell_amount DECIMAL(18,4),
+        cumulative_net_buy DECIMAL(18,4),
+        daily_inflow DECIMAL(18,4),
+        daily_balance DECIMAL(18,4),
+        holding_market_value DECIMAL(18,4)
+    )
+    """)
+
     conn.execute("""
     CREATE TABLE IF NOT EXISTS margin_trading (
         stock_code VARCHAR(10) NOT NULL,

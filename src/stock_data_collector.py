@@ -2697,20 +2697,21 @@ class StockDataCollector:
             
             code = stock_code[2:]
             
-            # 获取北向资金持股数据
-            df = ak.stock_em_hsgt_hold_stock_em(symbol="北向持股", symbol_code=code)
+            # 获取北向资金持股数据（使用 stock_hsgt_individual_em 接口）
+            # 注: 原 stock_em_hsgt_hold_stock_em 接口已从 akshare 移除
+            df = ak.stock_hsgt_individual_em(symbol=code)
             
-            if df.empty:
+            if df is None or df.empty:
                 logger.info(f"{stock_code} 没有北向资金数据")
                 return
             
             # 处理数据
             df = df.rename(columns={
-                "日期": "trade_date",
-                "持股变动": "net_inflow",
-                "持股数": "holding_shares",
+                "持股日期": "trade_date",
+                "持股数量": "holding_shares",
                 "持股市值": "holding_value",
-                "持股比例": "holding_ratio"
+                "持股数量占A股百分比": "holding_ratio",
+                "今日增持资金": "net_inflow",
             })
             
             df['stock_code'] = stock_code
@@ -2719,8 +2720,9 @@ class StockDataCollector:
             # 按日期排序
             df = df.sort_values('trade_date').reset_index(drop=True)
             
-            # 计算累计净流入
+            # 计算累计净流入（首日"今日增持资金"为NaN，填充为0）
             if 'net_inflow' in df.columns:
+                df['net_inflow'] = pd.to_numeric(df['net_inflow'], errors='coerce').fillna(0.0)
                 df['inflow_5d'] = df['net_inflow'].rolling(5, min_periods=1).sum()
                 df['inflow_10d'] = df['net_inflow'].rolling(10, min_periods=1).sum()
                 df['inflow_30d'] = df['net_inflow'].rolling(30, min_periods=1).sum()

@@ -7,7 +7,6 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR / "logs"
 SCRIPTS_DIR = BASE_DIR / "scripts"
-PARQUET_DIR = DATA_DIR / "parquet"
 BACKUP_DIR = DATA_DIR / "backups"
 
 DB_PATH = DATA_DIR / "stock_data.duckdb"
@@ -26,18 +25,13 @@ STOCK_CODES = [
     "sh600089",
     "sz002648",
     "sh513700",
+    "sh600552",
 ]
 
 START_DATE = "20160510"
 LOG_LEVEL = "INFO"
 
-PARQUET_DATA_TYPES = {
-    "daily": PARQUET_DIR / "daily",
-    "financial": PARQUET_DIR / "financial",
-    "indicators": PARQUET_DIR / "indicators",
-}
-
 BACKUP_RETENTION_DAYS = 30
 
-for d in [DATA_DIR, LOG_DIR, SCRIPTS_DIR, BACKUP_DIR, *PARQUET_DATA_TYPES.values()]:
+for d in [DATA_DIR, LOG_DIR, SCRIPTS_DIR, BACKUP_DIR]:
     d.mkdir(parents=True, exist_ok=True)

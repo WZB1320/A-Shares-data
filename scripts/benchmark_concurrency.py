@@ -34,20 +34,13 @@ import src.config as config
 _tmp_dir = Path(tempfile.gettempdir()) / f"bench_{uuid.uuid4().hex}"
 _tmp_dir.mkdir(parents=True, exist_ok=True)
 config.DB_PATH = _tmp_dir / "bench.duckdb"
-config.PARQUET_DIR = _tmp_dir / "parquet"
 config.BACKUP_DIR = _tmp_dir / "backups"
-config.PARQUET_DATA_TYPES = {
-    "daily": config.PARQUET_DIR / "daily",
-    "financial": config.PARQUET_DIR / "financial",
-    "indicators": config.PARQUET_DIR / "indicators",
-}
-for d in [config.PARQUET_DIR, config.BACKUP_DIR, *config.PARQUET_DATA_TYPES.values()]:
+for d in [config.DB_PATH.parent, config.BACKUP_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 from src.config import STOCK_CODES, START_DATE
 from src.database.operations import DatabaseOperations
 from src.database.models import init_tables
-from src.database.parquet_store import ParquetStore
 from src.collector.multi_source_collector import MultiSourceCollector
 from src.collector.baostock_collector import BaostockCollector
 from src.collector.rate_limiter import set_akshare_rate
@@ -65,9 +58,9 @@ def _cleanup():
         shutil.rmtree(_tmp_dir, ignore_errors=True)
 
 
-def collect_one_stock(db_ops, parquet_store, stock_code: str):
+def collect_one_stock(db_ops, stock_code: str):
     """采集单只股票(供串行和并发模式共用)"""
-    collector = MultiSourceCollector(db_ops, parquet_store, START_DATE)
+    collector = MultiSourceCollector(db_ops, START_DATE)
     collector.collect_stock(stock_code)
 
 
@@ -80,7 +73,6 @@ def run_serial(stock_codes: list) -> float:
     DatabaseOperations.init_connection_manager(config.DB_PATH)
     db_ops = DatabaseOperations()
     init_tables(db_ops.conn)
-    parquet_store = ParquetStore(config.PARQUET_DIR)
 
     # 串行模式不限流(AKShare 单线程调用不会被封)
     set_akshare_rate(max_calls=2, period=1.0)
@@ -89,7 +81,7 @@ def run_serial(stock_codes: list) -> float:
     for i, code in enumerate(stock_codes, 1):
         t0 = time.time()
         try:
-            collect_one_stock(db_ops, parquet_store, code)
+            collect_one_stock(db_ops, code)
             logger.info(f"[串行] {i}/{len(stock_codes)} {code} 完成 ({time.time()-t0:.1f}s)")
         except Exception as e:
             logger.error(f"[串行] {i}/{len(stock_codes)} {code} 失败: {e}")
@@ -112,7 +104,6 @@ def run_concurrent(stock_codes: list, max_workers: int = 4) -> float:
     DatabaseOperations.init_connection_manager(config.DB_PATH, read_pool_size=max_workers + 2)
     db_ops = DatabaseOperations()
     init_tables(db_ops.conn)
-    parquet_store = ParquetStore(config.PARQUET_DIR)
 
     # 并发模式限流: 降低 AKShare 调用频率防封
     akshare_max = max(1, 2 // max_workers)
@@ -121,7 +112,7 @@ def run_concurrent(stock_codes: list, max_workers: int = 4) -> float:
     start = time.time()
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bench") as executor:
         futures = {
-            executor.submit(collect_one_stock, db_ops, parquet_store, code): code
+            executor.submit(collect_one_stock, db_ops, code): code
             for code in stock_codes
         }
         completed = 0
@@ -166,9 +157,6 @@ def main():
             # 清理临时数据,避免影响并发测试
             _cleanup()
             config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            config.PARQUET_DIR.mkdir(parents=True, exist_ok=True)
-            for d in config.PARQUET_DATA_TYPES.values():
-                d.mkdir(parents=True, exist_ok=True)
 
             # 并发采集
             concurrent_time = run_concurrent(test_codes, max_workers=args.workers)
