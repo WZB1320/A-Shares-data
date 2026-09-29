@@ -16,13 +16,22 @@
 import akshare as ak
 import pandas as pd
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from .base import BaseCollector, retry
+from .rate_limiter import socket_timeout
 
 logger = logging.getLogger(__name__)
 
 
 class EastmoneyCollector(BaseCollector):
+    # 融资融券首次采集的回溯窗口(自然日)。该接口按"交易所 + 日期"返回当日
+    # 全部标的明细(数千行), 请求次数即成本, 因此窗口不宜过大。
+    MARGIN_LOOKBACK_DAYS = 60
+    # 增量采集时强制回补的最近交易日数量(自愈窗口)
+    MARGIN_OVERLAP_DAYS = 5
+    # 单次 akshare 请求的 socket 超时(秒), 防止半死连接让线程无限阻塞
+    AKSHARE_SOCKET_TIMEOUT = 15.0
+
     def __init__(self, db_ops, start_date: str):
         super().__init__(db_ops, start_date)
         self._init_column_metadata()
@@ -41,21 +50,82 @@ class EastmoneyCollector(BaseCollector):
                 logger.error(f"{stock_code} {name}采集失败: {e}")
 
     def collect_margin_trading(self, stock_code: str):
-        """通过AKShare采集融资融券数据(BaoStock无此API)"""
+        """通过AKShare采集融资融券数据(BaoStock无此API)
+
+        数据源特性: stock_margin_detail_sse/szse 按"交易所 + 日期"返回当日
+        全部标的明细(数千行), 本地筛选后只留自己那一行 —— 即"每次请求都是
+        一次全市场下载"。因此必须做增量: 只请求水位线之后的交易日。
+
+        历史缺陷(已修):
+          - 固定回溯 60 个自然日并全量重采, 不使用已有的 update_log 水位;
+          - 用自然日驱动, 对周末发无意义请求;
+          - 异常被 `except Exception: continue` 完全静默, 且无超时 —— 网络
+            半死时线程挂起且无任何日志(实测挂起 25 分钟难以定位);
+          - 水位写的是"采集执行日期", 当天数据尚未发布时水位已推进, 语义上
+            超前于数据本身, 直接用于增量会永久漏掉这一天(现有 13 只股票的
+            margin 数据就停在 2026-09-02 而水位却记到 09-03)。现改为写
+            "实际覆盖到的最大交易日期"。
+        """
         try:
             logger.info(f"[akshare] 开始采集 {stock_code} 融资融券")
 
             code = stock_code[2:]
-            today = datetime.now()
+            today = datetime.now().date()
             margin_api = ak.stock_margin_detail_sse if stock_code.startswith('sh') else ak.stock_margin_detail_szse
 
+            # --- 本地交易日历(升序), 用于驱动请求与确定回补窗口 ---
+            with self.db_ops.cm.acquire_reader() as reader:
+                calendar = [
+                    r[0] for r in reader.execute(
+                        "SELECT DISTINCT trade_date FROM stock_daily "
+                        "WHERE trade_date <= ? ORDER BY trade_date",
+                        (today,),
+                    ).fetchall()
+                ]
+
+            # --- 增量窗口: 水位之后开始, 并强制回补最近 N 个交易日 ---
+            # get_last_update_date 返回"上次水位 +1 天"(YYYYMMDD); 无记录时为 start_date
+            begin_str = self.db_ops.get_last_update_date(stock_code, "margin", self.start_date)
+            try:
+                begin = datetime.strptime(begin_str, "%Y%m%d").date()
+            except (ValueError, TypeError):
+                begin = today
+
+            # 回补锚点: 取最近 N 个交易日中最早的一天, begin 不得晚于它,
+            # 使偶发请求失败的日期能在后续几次采集中自动补上
+            if calendar:
+                anchor_idx = max(0, len(calendar) - self.MARGIN_OVERLAP_DAYS)
+                begin = min(begin, calendar[anchor_idx])
+
+            earliest = today - timedelta(days=self.MARGIN_LOOKBACK_DAYS)
+            clamped = begin < earliest
+            if clamped:
+                begin = earliest
+
+            if begin > today:
+                logger.info(f"[akshare] {stock_code} 融资融券已是最新(水位={begin_str})")
+                return
+
+            # --- 用交易日历裁剪区间, 避免对周末/节假日发无意义请求 ---
+            trade_dates = [d for d in calendar if begin <= d <= today]
+            if not trade_dates:
+                # 兜底: 该区间日线尚未入库时退回自然日遍历
+                trade_dates = [begin + timedelta(days=i) for i in range((today - begin).days + 1)]
+
+            logger.info(
+                f"[akshare] {stock_code} 融资融券区间 {begin}~{today} "
+                f"共 {len(trade_dates)} 个交易日 (水位={begin_str}"
+                f"{', 首次采集已限制窗口' if clamped else ''})"
+            )
+
             all_data = []
-            for i in range(60):
-                check_date = today - pd.Timedelta(days=i)
+            failed = 0
+            for check_date in trade_dates:
                 date_str = check_date.strftime("%Y%m%d")
                 try:
-                    df = margin_api(date=date_str)
-                    if df.empty:
+                    with socket_timeout(self.AKSHARE_SOCKET_TIMEOUT):
+                        df = margin_api(date=date_str)
+                    if df is None or df.empty:
                         continue
                     code_col = None
                     for c in ['标的证券代码', '标的代码', '证券代码']:
@@ -65,10 +135,21 @@ class EastmoneyCollector(BaseCollector):
                     df_filtered = df[df[code_col].astype(str) == code] if code_col else pd.DataFrame()
                     if not df_filtered.empty:
                         df_filtered = df_filtered.copy()
-                        df_filtered['_trade_date'] = check_date.date()
+                        df_filtered['_trade_date'] = check_date
                         all_data.append(df_filtered)
-                except Exception:
+                except Exception as e:
+                    # 不再静默: 失败要看得见, 否则挂起时无从定位
+                    failed += 1
+                    logger.warning(
+                        f"[akshare] {stock_code} 融资融券 {date_str} 请求失败: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     continue
+
+            if failed:
+                logger.warning(
+                    f"[akshare] {stock_code} 融资融券 {failed}/{len(trade_dates)} 个交易日请求失败"
+                )
 
             if not all_data:
                 logger.info(f"{stock_code} 没有融资融券数据")
@@ -95,13 +176,17 @@ class EastmoneyCollector(BaseCollector):
             df['total_change'] = df.get('rz_change', 0) + df.get('rq_change', 0)
             df['total_change_pct'] = df['total_change'] / df['total_balance'].shift(1) * 100
 
-            today_fmt = datetime.now().strftime("%Y-%m-%d")
+            # 水位写"实际覆盖到的最大交易日期", 而不是执行日期:
+            # 执行日期会超前于数据本身, 使增量窗口跳过尚未发布的交易日, 造成永久缺口
+            watermark = pd.to_datetime(df['trade_date']).max().date().strftime("%Y-%m-%d")
             # 事务保证: 融资融券数据写入 + 水位更新 原子化
             try:
                 with self.db_ops.transaction():
                     self.db_ops.insert_dataframe("margin_trading", df, ["stock_code", "trade_date"])
-                    self.db_ops.update_last_update_date(stock_code, "margin", today_fmt)
-                logger.info(f"[akshare] {stock_code} 融资融券完成，新增 {len(df)} 条")
+                    self.db_ops.update_last_update_date(stock_code, "margin", watermark)
+                logger.info(
+                    f"[akshare] {stock_code} 融资融券完成，写入 {len(df)} 条, 水位推进到 {watermark}"
+                )
             except Exception as e:
                 logger.error(f"[akshare] {stock_code} 融资融券写入失败,已回滚: {e}")
                 raise

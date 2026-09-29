@@ -5,9 +5,11 @@ AKShare 底层调用东方财富/新浪等 HTTP API,高频请求会被封 IP。
   - 全局速率限制器: 限制 AKShare 调用频率
   - 线程安全: 通过 Lock 保证多线程环境下速率控制正确
 """
+import socket
 import threading
 import time
 import logging
+from contextlib import contextmanager
 from functools import wraps
 from typing import Callable
 
@@ -96,3 +98,23 @@ def set_akshare_rate(max_calls: int = 2, period: float = 1.0):
     global _akshare_limiter
     _akshare_limiter = RateLimiter(max_calls=max_calls, period=period)
     logger.info(f"AKShare 限流参数调整: {max_calls}次/{period}秒")
+
+
+@contextmanager
+def socket_timeout(seconds: float):
+    """临时为全局 socket 设置默认超时, 退出时恢复原值。
+
+    用途: akshare 内部用 requests 发 HTTP 请求, 但不暴露 timeout 参数。
+    网络半死连接会让调用线程无限期阻塞 —— 实测融资融券采集曾挂起 25 分钟,
+    且因为异常被静默吞掉而完全无日志。requests 在未显式传 timeout 时会
+    回退到 socket 默认超时, 因此在这里设置是有效的。
+
+    注意: 该设置是进程级的, 会影响并发线程新建的连接。采集场景下以
+    "宁可超时失败后重试/跳过, 不可无限挂起"为准, 因此可接受。
+    """
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
