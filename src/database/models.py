@@ -338,6 +338,34 @@ def init_tables(conn):
     """)
 
     conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_pledge (
+        stock_code VARCHAR(10) NOT NULL,
+        trade_date DATE NOT NULL,
+        pledge_ratio DECIMAL(10,4),
+        pledge_shares BIGINT,
+        pledge_market_value DECIMAL(20,2),
+        pledge_count INTEGER,
+        PRIMARY KEY (stock_code, trade_date)
+    )
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_holder_change (
+        stock_code VARCHAR(10) NOT NULL,
+        announcement_date DATE NOT NULL,
+        holder_name VARCHAR(200) NOT NULL,
+        change_type VARCHAR(10) NOT NULL,
+        change_shares BIGINT,
+        change_ratio DECIMAL(10,4),
+        hold_after_shares BIGINT,
+        hold_after_ratio DECIMAL(10,4),
+        change_start_date DATE,
+        change_end_date DATE,
+        PRIMARY KEY (stock_code, announcement_date, holder_name, change_type, change_shares)
+    )
+    """)
+
+    conn.execute("""
     CREATE SEQUENCE IF NOT EXISTS seq_dragon_tiger_id;
     CREATE TABLE IF NOT EXISTS dragon_tiger (
         id INTEGER PRIMARY KEY DEFAULT nextval('seq_dragon_tiger_id'),

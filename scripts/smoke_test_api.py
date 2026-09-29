@@ -7,6 +7,7 @@
   - /api/financial              原始报表(current_assets/current_liabilities)
   - /api/capital                总股本非空
   - /api/industry/list + /api/industry/{name}/stocks   同行业可比样本量
+  - /api/risk                   风险面结构完整(质押/增减持/汇总)
   - 排序: 所有列表接口最新在前
 
 用法(需先启动 API):
@@ -145,6 +146,19 @@ def main():
         peers = get(f"/api/industry/{urllib.parse.quote(top['industry_name'])}/stocks")
         check("最大行业组样本量 > 100", peers.get("count", 0) > 100,
               f"{top['industry_name']} -> {peers['count']} 只")
+
+    # ---- 6. 风险面: 结构完整 + 汇总字段 ----
+    print("\n[6] /api/risk 风险面")
+    for code in args.stocks:
+        j = get(f"/api/risk/{code}")
+        ok_shape = "pledge" in j and "holder_change" in j and "summary" in j
+        check(f"{code} risk 结构完整", ok_shape, str(list(j.keys())) if not ok_shape else "")
+        if ok_shape:
+            s = j["summary"]
+            lr = s.get("latest_pledge_ratio")
+            ok_ratio = lr is None or 0 <= float(lr) <= 100
+            check(f"{code} 质押比例合理或无记录", ok_ratio,
+                  f"ratio={lr} level={s.get('risk_level')}")
 
     # ---- 汇总 ----
     failed = [c for c in CHECKS if not c[1]]

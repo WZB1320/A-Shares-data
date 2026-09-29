@@ -19,6 +19,7 @@ from .tencent_collector import TencentCollector
 from .eastmoney import EastmoneyCollector
 from .fundflow_collector import FundFlowCollector
 from .financial_service import FinancialService
+from .risk_collector import RiskCollector
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class MultiSourceCollector(BaseCollector):
         self.akshare = EastmoneyCollector(db_ops, start_date)
         self.fundflow = FundFlowCollector(db_ops, start_date)
         self.financial_service = FinancialService(db_ops, start_date)
+        self.risk = RiskCollector(db_ops, start_date)
 
     def collect_stock(self, stock_code: str):
         """按优先级依次采集各类型数据"""

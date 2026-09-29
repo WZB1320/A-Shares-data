@@ -72,6 +72,9 @@ class Scheduler:
         # ========== 阶段1.5: 整体北向资金(不依赖个股,只执行一次) ==========
         self._collect_northbound_market_flow()
 
+        # ========== 阶段1.6: 风险面(质押+增减持, 全市场接口各拉一次) ==========
+        self._collect_risk_data(stock_codes)
+
         # ========== 阶段2: 串行计算指标 ==========
         self._calculate_indicators(stock_codes)
 
@@ -121,6 +124,14 @@ class Scheduler:
             collector.akshare.collect_northbound_market_flow()
         except Exception as e:
             logger.error(f"北向资金整体流向采集失败: {e}", exc_info=True)
+
+    def _collect_risk_data(self, stock_codes: list):
+        """采集风险面数据(质押+增减持, 全市场接口各拉一次, 独立于个股执行)"""
+        try:
+            collector = MultiSourceCollector(self.db_ops, START_DATE)
+            collector.risk.collect_risk_all(stock_codes)
+        except Exception as e:
+            logger.error(f"风险面数据采集失败: {e}", exc_info=True)
 
     def _collect_one_stock(self, collector: MultiSourceCollector, stock_code: str):
         """采集单只股票的所有数据(在线程中执行)"""

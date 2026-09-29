@@ -37,6 +37,8 @@ sz002843 华懋新材   sz300750 宁德时代
 | `margin_trading` / `/api/margin` | 22 | |
 | `dividends` / `/api/dividends` | 21 | |
 | `capital_flow` / `/api/flow` | 见说明 | 数据源单次只返回最近约 121 个交易日；由每日采集累积，回填进行中（东财限流，慢速滴灌） |
+| `risk_pledge` / `/api/risk` | 见说明 | 周频质押比例快照；零质押股票无行属正常 |
+| `risk_holder_change` / `/api/risk` | 见说明 | 股东增减持公告记录；无记录属正常 |
 
 > **维护约定**：新增自选股时必须**同时**改两处 —— `src/config.py` 的 `STOCK_CODES`
 > 和 `scripts/init_master.py` 的 `STOCKS`，否则会出现"主数据里有、但采集不到"的空值假象。
@@ -75,11 +77,13 @@ sz002843 华懋新材   sz300750 宁德时代
 | 16 | `/api/dividends/{stock_code}` | GET | 分红数据 |
 | 17 | `/api/announcements/{stock_code}` | GET | 公告数据 |
 | 18 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
-| 19 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
-| 20 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
-| 21 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
-| 22 | `/api/master` | GET | 股票主数据 |
-| 23 | `/api/master/{stock_code}` | GET | 单只股票主数据（含最新收盘价 `close_price`） |
+| 19 | `/api/risk/{stock_code}` | GET | 风险面汇总（股权质押 + 股东增减持） |
+| 20 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
+| 21 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
+| 22 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
+| 23 | `/api/coverage` | GET | 数据覆盖度自检（各表覆盖/最新日期/缺失清单） |
+| 24 | `/api/master` | GET | 股票主数据 |
+| 25 | `/api/master/{stock_code}` | GET | 单只股票主数据（含最新收盘价 `close_price`） |
 
 > 排序约定：**所有列表接口均为日期降序（最新在前）**，`limit=1` 即取最新一条。
 > `daily` / `technical` / `valuation` 按 `trade_date` 降序；`financial` 按 `report_date` 降序；
@@ -419,6 +423,43 @@ sz002843 华懋新材   sz300750 宁德时代
 | institution_buy_ratio | float | 机构买入占比 |
 | institution_sell_ratio | float | 机构卖出占比 |
 | institution_net_ratio | float | 机构净额占比 |
+
+---
+
+### 12. `/api/risk/{stock_code}` 风险面汇总
+
+**返回结构**：`{pledge, holder_change, summary, note?}`
+
+**pledge.data（股权质押，周频快照，降序）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| trade_date | string | 快照交易日期（周频，约每周五） |
+| pledge_ratio | float | 质押比例（占总股本 %） |
+| pledge_shares | int | 质押股数（股） |
+| pledge_market_value | float | 质押市值（元） |
+| pledge_count | int | 质押笔数 |
+
+**holder_change.data（股东增减持，按公告日降序）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| announcement_date | string | 公告日 |
+| holder_name | string | 股东名称 |
+| change_type | string | `增持` / `减持` |
+| change_shares | int | 变动股数（股） |
+| change_ratio | float | 变动占总股本比例（%） |
+| hold_after_shares | int | 变动后持股数（股，可能为 null） |
+| hold_after_ratio | float | 变动后持股比例（%，可能为 null） |
+| change_start_date / change_end_date | string | 变动区间 |
+
+**summary**：`latest_pledge_ratio`（最新质押比例）、`risk_level`
+（无质押记录 / 低 ≤5% / 中 5~20% / 高 >20%）、`reduce_count_recent_90d`（近 90 天减持公告次数）。
+
+> - **零质押的股票 `pledge.count = 0` 属正常**（无质押记录即健康），不是数据缺失。
+> - 数据源为东方财富 datacenter（周频质押快照 + 增减持公告），随每日数据更新自动累积。
 
 ---
 
