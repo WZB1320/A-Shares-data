@@ -7,7 +7,7 @@
   - /api/financial              原始报表(current_assets/current_liabilities)
   - /api/capital                总股本非空
   - /api/industry/list + /api/industry/{name}/stocks   同行业可比样本量
-  - /api/risk                   风险面结构完整(质押/增减持/汇总)
+  - /api/risk                   风险面结构完整(质押/增减持/回购/解禁/股东户数/汇总)
   - 排序: 所有列表接口最新在前
 
 用法(需先启动 API):
@@ -148,17 +148,23 @@ def main():
               f"{top['industry_name']} -> {peers['count']} 只")
 
     # ---- 6. 风险面: 结构完整 + 汇总字段 ----
-    print("\n[6] /api/risk 风险面")
+    print("\n[6] /api/risk 风险面/治理事件")
     for code in args.stocks:
         j = get(f"/api/risk/{code}")
-        ok_shape = "pledge" in j and "holder_change" in j and "summary" in j
-        check(f"{code} risk 结构完整", ok_shape, str(list(j.keys())) if not ok_shape else "")
+        ok_shape = all(k in j for k in
+                       ("pledge", "holder_change", "buyback", "unlock",
+                        "holder_num", "summary"))
+        check(f"{code} risk 结构完整(5 段)", ok_shape,
+              str(list(j.keys())) if not ok_shape else "")
         if ok_shape:
             s = j["summary"]
             lr = s.get("latest_pledge_ratio")
             ok_ratio = lr is None or 0 <= float(lr) <= 100
             check(f"{code} 质押比例合理或无记录", ok_ratio,
                   f"ratio={lr} level={s.get('risk_level')}")
+            for key in ("ongoing_buyback_count", "unlock_upcoming_90d_count",
+                        "holder_num_trend", "reduce_count_recent_90d"):
+                check(f"{code} summary 含 {key}", key in s, "")
 
     # ---- 汇总 ----
     failed = [c for c in CHECKS if not c[1]]

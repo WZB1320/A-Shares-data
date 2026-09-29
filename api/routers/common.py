@@ -321,6 +321,9 @@ _COVERAGE_TABLES = {
     "dragon_tiger": "trade_date",
     "risk_pledge": "trade_date",
     "risk_holder_change": "announcement_date",
+    "risk_buyback": "announcement_date",
+    "risk_unlock": "free_date",
+    "risk_holder_num": "stat_date",
 }
 
 
@@ -354,7 +357,8 @@ def get_coverage(conn: duckdb.DuckDBPyConnection = Depends(get_db)):
             c in etf_codes and table in {
                 "valuation_indicators", "financial_intermediate",
                 "financial_statements", "stock_capital", "dividends",
-                "risk_pledge", "risk_holder_change",
+                "risk_pledge", "risk_holder_change", "risk_buyback",
+                "risk_unlock", "risk_holder_num",
             }
         )]
         tables.append({

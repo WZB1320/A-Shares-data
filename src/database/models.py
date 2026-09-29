@@ -366,6 +366,55 @@ def init_tables(conn):
     """)
 
     conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_buyback (
+        stock_code VARCHAR(10) NOT NULL,
+        announcement_date DATE NOT NULL,
+        progress VARCHAR(20),
+        plan_start_date DATE,
+        price_cap DECIMAL(12,4),
+        shares_lower BIGINT,
+        shares_upper BIGINT,
+        amount_lower DECIMAL(20,2),
+        amount_upper DECIMAL(20,2),
+        done_shares BIGINT,
+        done_amount DECIMAL(20,2),
+        done_price_low DECIMAL(12,4),
+        done_price_high DECIMAL(12,4),
+        PRIMARY KEY (stock_code, announcement_date, progress)
+    )
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_unlock (
+        stock_code VARCHAR(10) NOT NULL,
+        free_date DATE NOT NULL,
+        free_type VARCHAR(100) NOT NULL,
+        free_shares BIGINT,
+        actual_free_shares BIGINT,
+        actual_free_value DECIMAL(20,2),
+        ratio_to_float DECIMAL(10,6),
+        close_before DECIMAL(12,4),
+        PRIMARY KEY (stock_code, free_date, free_type)
+    )
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_holder_num (
+        stock_code VARCHAR(10) NOT NULL,
+        stat_date DATE NOT NULL,
+        holder_num BIGINT,
+        holder_num_prev BIGINT,
+        holder_num_change BIGINT,
+        change_ratio DECIMAL(10,4),
+        avg_mktcap DECIMAL(20,2),
+        avg_shares DECIMAL(18,2),
+        total_shares BIGINT,
+        notice_date DATE,
+        PRIMARY KEY (stock_code, stat_date)
+    )
+    """)
+
+    conn.execute("""
     CREATE SEQUENCE IF NOT EXISTS seq_dragon_tiger_id;
     CREATE TABLE IF NOT EXISTS dragon_tiger (
         id INTEGER PRIMARY KEY DEFAULT nextval('seq_dragon_tiger_id'),

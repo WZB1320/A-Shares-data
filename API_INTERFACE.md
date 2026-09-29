@@ -77,7 +77,7 @@ sz002843 华懋新材   sz300750 宁德时代
 | 16 | `/api/dividends/{stock_code}` | GET | 分红数据 |
 | 17 | `/api/announcements/{stock_code}` | GET | 公告数据 |
 | 18 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
-| 19 | `/api/risk/{stock_code}` | GET | 风险面汇总（股权质押 + 股东增减持） |
+| 19 | `/api/risk/{stock_code}` | GET | 风险面/治理事件汇总（质押+增减持+回购+解禁+股东户数） |
 | 20 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
 | 21 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
 | 22 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
@@ -426,9 +426,9 @@ sz002843 华懋新材   sz300750 宁德时代
 
 ---
 
-### 12. `/api/risk/{stock_code}` 风险面汇总
+### 12. `/api/risk/{stock_code}` 风险面/治理事件汇总
 
-**返回结构**：`{pledge, holder_change, summary, note?}`
+**返回结构**：`{pledge, holder_change, buyback, unlock, holder_num, summary, note?}`
 
 **pledge.data（股权质押，周频快照，降序）**：
 
@@ -458,8 +458,52 @@ sz002843 华懋新材   sz300750 宁德时代
 **summary**：`latest_pledge_ratio`（最新质押比例）、`risk_level`
 （无质押记录 / 低 ≤5% / 中 5~20% / 高 >20%）、`reduce_count_recent_90d`（近 90 天减持公告次数）。
 
+**buyback.data（股票回购方案与进度，按公告日降序）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| announcement_date | string | 最新公告日 |
+| progress | string | 实施进度：董事会预案/股东大会通过/股东大会否决/实施中/停止实施/完成实施 |
+| plan_start_date | string | 回购起始时间 |
+| price_cap | float | 计划回购价格（上限） |
+| shares_lower / shares_upper | int | 计划回购数量区间（股，可能为 null） |
+| amount_lower / amount_upper | float | 计划回购金额区间（元） |
+| done_shares | int | 已回购股份数量（股） |
+| done_amount | float | 已回购金额（元） |
+| done_price_low / done_price_high | float | 已回购价格区间（元） |
+
+**unlock.data（限售解禁批次，按解禁日降序，含未来计划）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| free_date | string | 解禁日（未来批次即"待解禁日历"） |
+| free_type | string | 限售股类型（首发原股东/定增机构配售/股权激励等） |
+| free_shares | int | 解禁数量（股） |
+| actual_free_shares | int | 实际解禁数量（股；**未来批次为 null 属正常**） |
+| actual_free_value | float | 实际解禁市值（元） |
+| ratio_to_float | float | 占解禁前流通市值**小数**（0.05 = 5%，调用方需 ×100） |
+| close_before | float | 解禁前一交易日收盘价 |
+
+**holder_num.data（股东户数，按统计截止日降序）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| stat_date | string | 股东户数统计截止日 |
+| holder_num / holder_num_prev | int | 本次/上次股东户数 |
+| holder_num_change / change_ratio | - | 增减户数 / 增减比例（%） |
+| avg_mktcap / avg_shares | float | 户均持股市值（元）/ 户均持股数量（股） |
+| total_shares | int | 总股本 |
+| notice_date | string | 公告日期 |
+
+**summary 扩展字段**：`ongoing_buyback_count` / `ongoing_buyback_amount`（进行中回购方案数与已回购金额）、`unlock_upcoming_90d_count` / `unlock_upcoming_90d_shares`（未来 90 天解禁批次数与股数）、`holder_num_latest` / `holder_num_trend`（最新户数与近 4 期趋势）。
+
 > - **零质押的股票 `pledge.count = 0` 属正常**（无质押记录即健康），不是数据缺失。
-> - 数据源为东方财富 datacenter（周频质押快照 + 增减持公告），随每日数据更新自动累积。
+> - 无回购/解禁记录同样属正常（没有相关公告）；ETF 五段全为 0 属正常。
+> - `holder_num` 持续减少 = 筹码集中（常被解读为主力吸筹信号）。
+> - 数据源为东方财富 datacenter（质押/增减持/回购/解禁/股东户数），随每日数据更新自动累积。
 
 ---
 

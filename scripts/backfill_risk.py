@@ -1,12 +1,13 @@
-"""风险面数据首次回填 / 日常补采 —— 质押 + 股东增减持
+"""风险面数据首次回填 / 日常补采 —— 质押 + 增减持 + 回购 + 解禁 + 股东户数
 
 用法:
     python scripts/backfill_risk.py               # 全部自选股
     python scripts/backfill_risk.py sz002272      # 指定股票(过滤范围)
 
 说明:
-    质押快照与增减持都是"全市场接口拉一次、过滤自选股"的模式,
-    与股票数量无关, 整体耗时约 4~5 分钟(增减持接口约 3 分钟)。
+    质押/增减持/回购/解禁都是"全市场接口拉一次、过滤自选股"的模式,
+    与股票数量无关, 整体耗时约 6~8 分钟(增减持接口约 3 分钟);
+    股东户数按股拉取(每股一次调用)。
     调度器(scheduler)每轮更新已自动执行本采集, 此脚本用于首次回填/手动补采。
 """
 import logging
@@ -40,6 +41,15 @@ def main():
         holder = reader.execute(
             "SELECT stock_code, COUNT(*), MAX(announcement_date) FROM risk_holder_change "
             "GROUP BY 1 ORDER BY 1").fetchall()
+        buyback = reader.execute(
+            "SELECT stock_code, COUNT(*), MAX(announcement_date) FROM risk_buyback "
+            "GROUP BY 1 ORDER BY 1").fetchall()
+        unlock = reader.execute(
+            "SELECT stock_code, COUNT(*), MAX(free_date) FROM risk_unlock "
+            "GROUP BY 1 ORDER BY 1").fetchall()
+        hnum = reader.execute(
+            "SELECT stock_code, COUNT(*), MAX(stat_date) FROM risk_holder_num "
+            "GROUP BY 1 ORDER BY 1").fetchall()
     print("=" * 60)
     print(f"risk_pledge 覆盖 {len(pledge)} 只:")
     for c, n, mx in pledge:
@@ -47,6 +57,15 @@ def main():
     print(f"risk_holder_change 覆盖 {len(holder)} 只:")
     for c, n, mx in holder:
         print(f"  {c:<10} {n:>3} 条  最新公告 {mx}")
+    print(f"risk_buyback 覆盖 {len(buyback)} 只:")
+    for c, n, mx in buyback:
+        print(f"  {c:<10} {n:>3} 个方案  最新公告 {mx}")
+    print(f"risk_unlock 覆盖 {len(unlock)} 只:")
+    for c, n, mx in unlock:
+        print(f"  {c:<10} {n:>3} 批  最新/最远 {mx}")
+    print(f"risk_holder_num 覆盖 {len(hnum)} 只:")
+    for c, n, mx in hnum:
+        print(f"  {c:<10} {n:>3} 期  止于 {mx}")
     no_pledge = set(codes) - {r[0] for r in pledge} - {"sh513700"}
     print(f"无质押记录(视为零质押): {' '.join(sorted(no_pledge)) or '无'}")
 
