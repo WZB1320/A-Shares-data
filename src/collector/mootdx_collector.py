@@ -161,13 +161,16 @@ class MootdxCollector(BaseCollector):
         # 填充流通股本和换手率(用总股本近似流通股本,A股已基本全流通)
         self._fill_turnover_and_shares(df, stock_code)
 
-        today_fmt = datetime.now().strftime("%Y-%m-%d")
+        # 水位写"实际入库数据的最大交易日期", 而不是执行日期:
+        # 执行日期会超前于数据本身 —— 数据源当日尚未发布时, 水位已推进到当天,
+        # 下次增量便从"执行日 +1"开始, 于是执行当天的数据被永久跳过。
+        watermark = pd.to_datetime(df['trade_date']).max().date().strftime("%Y-%m-%d")
         # 事务保证: 数据写入 + 水位更新 原子化
         try:
             with self.db_ops.transaction():
                 self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
-                self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-            logger.info(f"[mootdx] {stock_code} 日线数据完成，新增 {len(df)} 条")
+                self.db_ops.update_last_update_date(stock_code, "daily", watermark)
+            logger.info(f"[mootdx] {stock_code} 日线数据完成，写入 {len(df)} 条, 水位推进到 {watermark}")
             return True
         except Exception as e:
             logger.error(f"[mootdx] {stock_code} 日线写入失败,已回滚: {e}")
@@ -217,13 +220,14 @@ class MootdxCollector(BaseCollector):
             # 填充流通股本和换手率
             self._fill_turnover_and_shares(df, stock_code)
 
-            today_fmt = datetime.now().strftime("%Y-%m-%d")
+            # 水位写实际入库数据的最大交易日期(同主源, 见 collect_daily_data 注释)
+            watermark = pd.to_datetime(df['trade_date']).max().date().strftime("%Y-%m-%d")
             # 事务保证: 数据写入 + 水位更新 原子化
             try:
                 with self.db_ops.transaction():
                     self.db_ops.insert_dataframe("stock_daily", df, ["stock_code", "trade_date"])
-                    self.db_ops.update_last_update_date(stock_code, "daily", today_fmt)
-                logger.info(f"[AKShare回退] {stock_code} 日线数据完成，新增 {len(df)} 条")
+                    self.db_ops.update_last_update_date(stock_code, "daily", watermark)
+                logger.info(f"[AKShare回退] {stock_code} 日线数据完成，写入 {len(df)} 条, 水位推进到 {watermark}")
                 return True
             except Exception as e:
                 logger.error(f"[AKShare回退] {stock_code} 日线写入失败,已回滚: {e}")
