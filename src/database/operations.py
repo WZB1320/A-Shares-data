@@ -215,8 +215,24 @@ class DatabaseOperations:
                           update_time = now()
             """, (stock_code, data_type, end_date_dt))
 
-    def insert_dataframe(self, table_name: str, df, conflict_columns: Optional[list] = None):
-        """插入 DataFrame(写操作,自动加锁)"""
+    def insert_dataframe(
+        self,
+        table_name: str,
+        df,
+        conflict_columns: Optional[list] = None,
+        update_columns: Optional[list] = None,
+    ):
+        """插入 DataFrame(写操作,自动加锁)
+
+        Args:
+            table_name: 目标表
+            df: 待写入数据
+            conflict_columns: 冲突键(PK)。给定时走 ON CONFLICT 分支
+            update_columns: 冲突时改为更新的列。默认 None = DO NOTHING(幂等追加);
+                            给定列表时走 DO UPDATE SET, 用于"重新采到的近期数据
+                覆盖旧值"的自愈场景(如资金流当日盘中值需被收盘值替换)。
+                注意: 不要包含 conflict_columns 中的键列。
+        """
         if df.empty:
             return
 
@@ -227,10 +243,15 @@ class DatabaseOperations:
 
             if conflict_columns:
                 conflict_str = ", ".join(conflict_columns)
+                if update_columns:
+                    set_str = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_columns)
+                    conflict_action = f"DO UPDATE SET {set_str}"
+                else:
+                    conflict_action = "DO NOTHING"
                 sql = f"""
                 INSERT INTO {table_name} ({columns})
                 SELECT {columns} FROM df
-                ON CONFLICT ({conflict_str}) DO NOTHING
+                ON CONFLICT ({conflict_str}) {conflict_action}
                 """
             else:
                 sql = f"""

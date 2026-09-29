@@ -36,6 +36,7 @@ sz002843 华懋新材   sz300750 宁德时代
 | `stock_industry` / `/api/industry/*` | **5223** | 全市场行业成分, 可做同业对比 |
 | `margin_trading` / `/api/margin` | 22 | |
 | `dividends` / `/api/dividends` | 21 | |
+| `capital_flow` / `/api/flow` | 见说明 | 数据源单次只返回最近约 121 个交易日；由每日采集累积，回填进行中（东财限流，慢速滴灌） |
 
 > **维护约定**：新增自选股时必须**同时**改两处 —— `src/config.py` 的 `STOCK_CODES`
 > 和 `scripts/init_master.py` 的 `STOCKS`，否则会出现"主数据里有、但采集不到"的空值假象。
@@ -69,15 +70,16 @@ sz002843 华懋新材   sz300750 宁德时代
 | 11 | `/api/northbound/market` | GET | 北向资金**整体**流向（个股接口失效后的替代） |
 | 12 | `/api/northbound/{stock_code}` | GET | 北向资金（**个股数据止于 2024-08-16**） |
 | 13 | `/api/margin/{stock_code}` | GET | 融资融券 |
-| 14 | `/api/capital/{stock_code}` | GET | 股本数据 |
-| 15 | `/api/dividends/{stock_code}` | GET | 分红数据 |
-| 16 | `/api/announcements/{stock_code}` | GET | 公告数据 |
-| 17 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
-| 18 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
-| 19 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
-| 20 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
-| 21 | `/api/master` | GET | 股票主数据 |
-| 22 | `/api/master/{stock_code}` | GET | 单只股票主数据（含最新收盘价 `close_price`） |
+| 14 | `/api/flow/{stock_code}` | GET | 个股主力资金流向（超大/大/中/小单净额与净占比，**历史约 121 交易日**） |
+| 15 | `/api/capital/{stock_code}` | GET | 股本数据 |
+| 16 | `/api/dividends/{stock_code}` | GET | 分红数据 |
+| 17 | `/api/announcements/{stock_code}` | GET | 公告数据 |
+| 18 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
+| 19 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
+| 20 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
+| 21 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
+| 22 | `/api/master` | GET | 股票主数据 |
+| 23 | `/api/master/{stock_code}` | GET | 单只股票主数据（含最新收盘价 `close_price`） |
 
 > 排序约定：**所有列表接口均为日期降序（最新在前）**，`limit=1` 即取最新一条。
 > `daily` / `technical` / `valuation` 按 `trade_date` 降序；`financial` 按 `report_date` 降序；
@@ -325,7 +327,39 @@ sz002843 华懋新材   sz300750 宁德时代
 
 ---
 
-### 7. `/api/capital/{stock_code}` 股本数据
+### 7. `/api/flow/{stock_code}` 主力资金流向
+
+**返回字段**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| stock_code | string | 股票代码 |
+| trade_date | string | 交易日期 |
+| main_net_amount | float | 主力净额（元）= 大单净额 + 超大单净额 |
+| xlarge_net_amount | float | 超大单净额（元） |
+| large_net_amount | float | 大单净额（元） |
+| medium_net_amount | float | 中单净额（元） |
+| small_net_amount | float | 小单净额（元） |
+| main_net_ratio | float | 主力净占比（%） |
+| xlarge_net_ratio | float | 超大单净占比（%） |
+| large_net_ratio | float | 大单净占比（%） |
+| medium_net_ratio | float | 中单净占比（%） |
+| small_net_ratio | float | 小单净占比（%） |
+
+> **口径与恒等式**（服务端采集时已自检）：
+> 1. `main_net_amount` = `large_net_amount` + `xlarge_net_amount`
+> 2. 四类单净额合计 ≈ 0（资金守恒：有买必有卖）
+> 3. `main_net_ratio` ≈ `large_net_ratio` + `xlarge_net_ratio`
+> 4. 本表**不含收盘价字段**——收盘价请关联 `/api/daily` 按 `(stock_code, trade_date)` 取，
+>    采集时已做跨源一致性校验。
+
+> ⚠️ **历史深度约 121 个交易日（约半年）**：数据源单次只提供最近约 121 个交易日，
+> 更早的历史拿不到。表内数据由每日采集 UPSERT 累积，会随时间超过 121 天。
+> 当日盘中采集的是临时值，收盘后次日采集会覆盖为最终值。
+
+---
+
+### 8. `/api/capital/{stock_code}` 股本数据
 
 **返回字段**：
 
@@ -339,7 +373,7 @@ sz002843 华懋新材   sz300750 宁德时代
 
 ---
 
-### 8. `/api/dividends/{stock_code}` 分红数据
+### 9. `/api/dividends/{stock_code}` 分红数据
 
 **返回字段**：
 
@@ -352,7 +386,7 @@ sz002843 华懋新材   sz300750 宁德时代
 
 ---
 
-### 9. `/api/industry/{stock_code}` 行业信息
+### 10. `/api/industry/{stock_code}` 行业信息
 
 **返回字段**：
 
@@ -366,7 +400,7 @@ sz002843 华懋新材   sz300750 宁德时代
 
 ---
 
-### 10. `/api/dragon/{stock_code}` 龙虎榜
+### 11. `/api/dragon/{stock_code}` 龙虎榜
 
 **返回字段**：
 
@@ -559,6 +593,20 @@ peer_codes = [x["stock_code"] for x in peers["data"]]     # 全市场同业清�
 ```
 > 实操建议：可比公司通常还需叠加规模/业务筛选。行业成分已给全量，
 > 可再用 `/api/basic_info?stock_codes=...` 批量取价与估值做二次筛选。
+
+---
+
+### 问题 10：主力资金数据为空或历史不足
+
+**根因**：`capital_flow` 为 2026-09-29 新建表。数据源（东方财富）单次只提供
+最近约 **121 个交易日**历史，更早的拿不到；且该数据源 **IP 限流极严**，
+批量请求会触发临时封禁（实测：闲置一天后单发可成功，5 分钟后第 2 笔即被再封）。
+
+**现状**：历史回填采用慢速滴灌（每成功 1 只等 20+ 分钟）逐步补齐，
+未覆盖的股票短期会返回 `count: 0`。每日增量采集随每轮数据更新自动累积。
+
+**调用方建议**：对主力资金字段做判空处理，勿假设所有股票都有全量历史；
+判断覆盖进度可直接调 `/api/flow/{code}` 看返回的最早日期。
 
 ---
 

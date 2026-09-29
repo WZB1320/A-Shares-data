@@ -1,4 +1,4 @@
-"""资金与交易接口: 北向资金 / 融资融券 / 龙虎榜
+"""资金与交易接口: 北向资金 / 融资融券 / 主力资金流向 / 龙虎榜
 
 注意: /api/northbound/market 必须在 /api/northbound/{stock_code} 之前声明,
 否则 "market" 会被当作 stock_code
@@ -71,6 +71,34 @@ def get_margin_trading(
     )
     data = fetch_as_dicts(conn, sql, params)
     return {"stock_code": stock_code, "count": len(data), "data": data}
+
+
+@router.get("/api/flow/{stock_code}")
+def get_capital_flow(
+    stock_code: str,
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(10000, ge=1, le=100000),
+    conn: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """获取个股主力资金流向(超大单/大单/中单/小单 净额与净占比)
+
+    单位: 净额=元, 净占比=百分比(%)。
+    口径: `main_net_amount` = `large_net_amount` + `xlarge_net_amount`(主力净额
+    等于大单与超大单之和), 四类单净额合计约等于 0。
+
+    注: 数据源单次只提供最近约 121 个交易日(约半年), 表内数据由每日采集逐步累积。
+    """
+    sql, params = build_query(
+        "SELECT * FROM capital_flow",
+        stock_code=stock_code, start_date=start_date, end_date=end_date,
+        limit=limit,
+    )
+    data = fetch_as_dicts(conn, sql, params)
+    resp = {"stock_code": stock_code, "count": len(data), "data": data}
+    if not data:
+        resp["note"] = "该股票无主力资金数据(可能采集尚未覆盖, 或为非股票标的)"
+    return resp
 
 
 @router.get("/api/dragon/{stock_code}")

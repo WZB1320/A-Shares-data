@@ -17,6 +17,7 @@ from .mootdx_collector import MootdxCollector
 from .baostock_collector import BaostockCollector
 from .tencent_collector import TencentCollector
 from .eastmoney import EastmoneyCollector
+from .fundflow_collector import FundFlowCollector
 from .financial_service import FinancialService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class MultiSourceCollector(BaseCollector):
         self.baostock = BaostockCollector(db_ops, start_date)
         self.tencent = TencentCollector(db_ops, start_date)
         self.akshare = EastmoneyCollector(db_ops, start_date)
+        self.fundflow = FundFlowCollector(db_ops, start_date)
         self.financial_service = FinancialService(db_ops, start_date)
 
     def collect_stock(self, stock_code: str):
@@ -61,6 +63,9 @@ class MultiSourceCollector(BaseCollector):
 
             # 北向资金: AKShare (仅沪深港通标的有数据)
             ("北向资金", self._collect_northbound),
+
+            # 主力资金流向: 东方财富 push2his (自写 requests, 走 http)
+            ("主力资金", self._collect_capital_flow),
         ]
 
         for name, method in steps:
@@ -133,6 +138,10 @@ class MultiSourceCollector(BaseCollector):
     def _collect_northbound(self, stock_code: str):
         """北向资金: AKShare (仅沪深港通标的有数据)"""
         self.akshare.collect_northbound_flow(stock_code)
+
+    def _collect_capital_flow(self, stock_code: str):
+        """主力资金流向: 东方财富 push2his"""
+        self.fundflow.collect_capital_flow(stock_code)
 
     def close(self):
         """关闭所有数据源连接"""

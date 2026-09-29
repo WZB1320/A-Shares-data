@@ -313,6 +313,29 @@ def init_tables(conn):
     )
     """)
 
+    # 主力资金流向(东方财富 push2his, 见 collector/fundflow_collector.py)
+    # 单位: 净额=元, 净占比=百分比(%); 四类单(超大/大/中/小)净额合计 ≈ 0
+    # 恒等式: main_net_amount = large_net_amount + xlarge_net_amount
+    # 注: 接口同时返回 close/change_pct, 仅用于与 stock_daily 交叉校验, 不落库
+    #     (避免出现第二个价格来源, 同 valuation_indicators 不含 close 的原则)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS capital_flow (
+        stock_code VARCHAR(10) NOT NULL,
+        trade_date DATE NOT NULL,
+        main_net_amount DECIMAL(20,2),
+        xlarge_net_amount DECIMAL(20,2),
+        large_net_amount DECIMAL(20,2),
+        medium_net_amount DECIMAL(20,2),
+        small_net_amount DECIMAL(20,2),
+        main_net_ratio DECIMAL(10,4),
+        xlarge_net_ratio DECIMAL(10,4),
+        large_net_ratio DECIMAL(10,4),
+        medium_net_ratio DECIMAL(10,4),
+        small_net_ratio DECIMAL(10,4),
+        PRIMARY KEY (stock_code, trade_date)
+    )
+    """)
+
     conn.execute("""
     CREATE SEQUENCE IF NOT EXISTS seq_dragon_tiger_id;
     CREATE TABLE IF NOT EXISTS dragon_tiger (
