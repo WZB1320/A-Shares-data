@@ -72,6 +72,9 @@ STOCKS = [
      "2014-01-28", "正常", False),
     ("sz002843", "华懋新材", "华懋(厦门)新材料科技股份有限公司", "SZ", "主板",
      "2017-05-16", "正常", False),
+    # -- 2026-09-29 补齐: 有日线数据但漏登记主数据的股票 --
+    ("sh600552", "凯盛科技", "凯盛科技股份有限公司", "SH", "主板",
+     "2002-11-08", "正常", False),
 ]
 
 
@@ -97,13 +100,23 @@ def main():
     """)
 
     # 插入或更新
+    # 注意: 用 ON CONFLICT DO UPDATE 而非 INSERT OR REPLACE —— 后者会删除整行再插入,
+    # 导致 added_date 被重置为 CURRENT_DATE, 丢失首次登记时间。
     inserted = 0
     for row in STOCKS:
         conn.execute("""
-            INSERT OR REPLACE INTO stock_master
+            INSERT INTO stock_master
             (stock_code, stock_name, stock_name_cn, market, board,
              listing_date, status, is_etf)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (stock_code) DO UPDATE SET
+                stock_name    = EXCLUDED.stock_name,
+                stock_name_cn = EXCLUDED.stock_name_cn,
+                market        = EXCLUDED.market,
+                board         = EXCLUDED.board,
+                listing_date  = EXCLUDED.listing_date,
+                status        = EXCLUDED.status,
+                is_etf        = EXCLUDED.is_etf
         """, row)
         inserted += 1
 

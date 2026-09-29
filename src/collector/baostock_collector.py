@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 # 全局锁: BaoStock 的 bs 模块是进程级单例,必须串行化
 _bs_global_lock = threading.Lock()
 
+# 全市场行业快照缓存
+# BaoStock 的 query_stock_industry() 不带 code 参数时返回【全市场】行业表。
+# 原实现每采集一只股票都调用一次并只取自己那一行, 其余全部丢弃:
+#   1) 每只股票都要下载一次 5000+ 行, 单次耗时数分钟;
+#   2) 该调用在 _bs_global_lock 内, 一旦超时/挂起会阻塞所有其他线程。
+# 改为进程内只下载一次并缓存, 同时把全市场行业落库以修复"同行业可比公司样本不足"。
+_industry_snapshot_df = None
+_industry_snapshot_stored = False
+_industry_snapshot_lock = threading.Lock()
+
 
 class BaostockCollector(BaseCollector):
     def __init__(self, db_ops, start_date: str):
@@ -119,44 +129,101 @@ class BaostockCollector(BaseCollector):
         else:
             logger.warning(f"[baostock] {stock_code} 未获取到股本数据")
 
-    def collect_industry_data(self, stock_code: str):
-        """通过BaoStock采集行业分类(证监会行业分类)"""
-        self._ensure_login()
-        logger.info(f"[baostock] 开始采集 {stock_code} 行业信息")
+    def _get_industry_snapshot(self):
+        """获取全市场行业快照(进程内只下载一次)
 
-        bs_code = self._to_bs_code(stock_code)
+        Raises:
+            ConnectionError / ValueError: 快照不可用时抛出,由调用方回退 AKShare
+        """
+        global _industry_snapshot_df
+        with _industry_snapshot_lock:
+            if _industry_snapshot_df is not None:
+                return _industry_snapshot_df
 
-        # query_stock_industry在0.9.x可能有user_id bug
-        try:
-            industry_name = None
-            industry_classification = None
-
+            self._ensure_login()
             # BaoStock bs 模块全局单例,所有 bs API 调用必须在锁内
             with _bs_global_lock:
                 rs = bs.query_stock_industry()
                 if rs.error_code != '0':
-                    logger.warning(f"[baostock] 行业查询失败: {rs.error_msg}")
-                    return
-
+                    raise ConnectionError(f"BaoStock 行业查询失败: {rs.error_msg}")
                 data = []
                 while rs.error_code == '0' and rs.next():
                     data.append(rs.get_row_data())
 
-                if not data:
-                    logger.warning(f"[baostock] 未获取到行业数据")
-                    return
+            if not data:
+                raise ValueError("BaoStock 全市场行业快照为空")
 
-                df = pd.DataFrame(data, columns=rs.fields)
-                matched = df[df['code'] == bs_code]
+            _industry_snapshot_df = pd.DataFrame(data, columns=rs.fields)
+            logger.info(f"[baostock] 全市场行业快照已加载: {len(_industry_snapshot_df)} 行")
+            return _industry_snapshot_df
 
-                if matched.empty:
-                    logger.warning(f"[baostock] {stock_code} 未匹配到行业信息")
-                    return
+    def _store_industry_snapshot(self, df):
+        """把全市场行业快照落库(进程内只做一次)
 
-                row = matched.iloc[0]
-                industry_name = row.get('industry', '')
-                industry_classification = row.get('industryClassification', '')
+        修复「同行业可比公司样本不足」: 原实现只保存当前股票那一行, 导致
+        /api/industry/{name}/stocks 每个行业只有 1-3 只, 无法做同业对比。
+        这里把快照全量写入; 用 DO NOTHING 保留已有的人工维护记录(如 ETF 分类)。
+        """
+        global _industry_snapshot_stored
+        with _industry_snapshot_lock:
+            if _industry_snapshot_stored:
+                return
 
+            today = datetime.now().strftime("%Y-%m-%d")
+            rows = []
+            for _, r in df.iterrows():
+                bs_code = str(r.get('code', '') or '').strip()
+                industry_name = r.get('industry', '')
+                if not bs_code or not industry_name:
+                    continue
+                rows.append({
+                    'stock_code': self._from_bs_code(bs_code),
+                    'industry_name': industry_name,
+                    'industry_level': r.get('industryClassification', ''),
+                    'source': 'BaoStock',
+                    'update_date': today,
+                })
+
+            if not rows:
+                return
+
+            df_ind = pd.DataFrame(rows).drop_duplicates(subset=['stock_code'], keep='last')
+            with self.db_ops.transaction():
+                self.db_ops.conn.register("df_ind", df_ind)
+                self.db_ops.conn.execute("""
+                    INSERT INTO stock_industry
+                        (stock_code, industry_name, industry_level, source, update_date)
+                    SELECT stock_code, industry_name, industry_level, source,
+                           CAST(update_date AS DATE)
+                    FROM df_ind
+                    ON CONFLICT (stock_code) DO NOTHING
+                """)
+                self.db_ops.conn.unregister("df_ind")
+
+            _industry_snapshot_stored = True
+            logger.info(f"[baostock] 全市场行业已落库: {len(df_ind)} 只")
+
+    def collect_industry_data(self, stock_code: str):
+        """通过BaoStock采集行业分类(证监会行业分类)
+
+        复用进程内全市场快照, 不再每只股票重复下载整张行业表。
+        """
+        logger.info(f"[baostock] 开始采集 {stock_code} 行业信息")
+
+        try:
+            df = self._get_industry_snapshot()
+            # 首次调用时把全市场行业落库(修复同行业样本不足)
+            self._store_industry_snapshot(df)
+
+            bs_code = self._to_bs_code(stock_code)
+            matched = df[df['code'] == bs_code]
+            if matched.empty:
+                logger.warning(f"[baostock] {stock_code} 在行业快照中未匹配到")
+                return
+
+            row = matched.iloc[0]
+            industry_name = row.get('industry', '')
+            industry_classification = row.get('industryClassification', '')
             if not industry_name:
                 return
 
@@ -177,6 +244,9 @@ class BaostockCollector(BaseCollector):
         except AttributeError as e:
             # BaoStock 0.9.x query_stock_industry的user_id bug
             logger.warning(f"[baostock] query_stock_industry bug, 回退到AKShare: {e}")
+            self._fallback_industry_akshare(stock_code)
+        except Exception as e:
+            logger.error(f"[baostock] {stock_code} 行业信息采集失败: {e}")
             self._fallback_industry_akshare(stock_code)
 
     def _fallback_industry_akshare(self, stock_code: str):

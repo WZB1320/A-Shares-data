@@ -7,34 +7,73 @@
 
 ---
 
+## 零、数据覆盖范围（重要 — 先读这里）
+
+**接口只对本节列出的股票返回数据。查询范围外的股票, 所有接口都会返回 `count: 0` /
+空数组, 而不是报错。** 调用方若拿到 0/null/空值, 请先确认股票是否在覆盖清单内, 再怀疑字段。
+
+当前覆盖 **22 只**（`src/config.py` 的 `STOCK_CODES`，与 `stock_master` 主数据表一一对应）：
+
+```
+sh600089 特变电工   sh600276 恒瑞医药   sh600309 万华化学   sh600346 恒力石化
+sh600519 贵州茅台   sh600552 凯盛科技   sh600585 海螺水泥   sh600887 伊利股份
+sh600900 长江电力   sh601318 中国平安   sh601857 中国石油   sh513700 香港医药ETF
+sz000651 格力电器   sz000725 京东方A    sz000858 五粮液     sz002272 川润股份
+sz002415 海康威视   sz002594 比亚迪     sz002648 卫星化学   sz002714 牧原股份
+sz002843 华懋新材   sz300750 宁德时代
+```
+
+各表实际覆盖（2026-09-29 核对）：
+
+| 表 / 接口 | 覆盖股票数 | 说明 |
+|---|---|---|
+| `stock_master` | 22 | 权威清单 |
+| `stock_daily` / `/api/daily` | 22 | 日线, 数据起 2016-05-10 |
+| `valuation_indicators` / `/api/indicators/valuation` | 21 | 无 ETF（ETF 无 PE/PB, 属正常） |
+| `financial_statements` / `/api/financial` | 21 | 同上 |
+| `financial_intermediate` / `/api/indicators/financial` | 21 | 同上 |
+| `stock_capital` / `/api/capital` | 21 | 同上 |
+| `stock_industry` / `/api/industry/*` | **5223** | 全市场行业成分, 可做同业对比 |
+| `margin_trading` / `/api/margin` | 22 | |
+| `dividends` / `/api/dividends` | 21 | |
+
+> **维护约定**：新增自选股时必须**同时**改两处 —— `src/config.py` 的 `STOCK_CODES`
+> 和 `scripts/init_master.py` 的 `STOCKS`，否则会出现"主数据里有、但采集不到"的空值假象。
+> 改完执行 `python scripts/init_master.py` 同步主数据表，再跑一次数据更新。
+
+---
+
 ## 一、接口清单
 
 | # | 接口 | 方法 | 说明 |
 |---|------|------|------|
 | 1 | `/api/health` | GET | 健康检查 |
-| 2 | `/api/stocks` | GET | 股票列表 |
-| 3 | `/api/latest` | GET | 各股票最新数据日期 |
-| 4 | `/api/daily/{stock_code}` | GET | 日线行情 |
-| 5 | `/api/indicators/technical/{stock_code}` | GET | 技术指标 |
-| 6 | `/api/indicators/valuation/{stock_code}` | GET | 估值指标 |
-| 7 | `/api/indicators/financial/{stock_code}` | GET | 财务指标 |
-| 8 | `/api/financial/{stock_code}` | GET | 财务原始报表 |
-| 9 | `/api/northbound/{stock_code}` | GET | 北向资金 |
-| 10 | `/api/margin/{stock_code}` | GET | 融资融券 |
-| 11 | `/api/capital/{stock_code}` | GET | 股本数据 |
-| 12 | `/api/dividends/{stock_code}` | GET | 分红数据 |
-| 13 | `/api/announcements/{stock_code}` | GET | 公告数据 |
-| 14 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
-| 15 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
-| 16 | `/api/industry/list` | GET | 行业列表 |
-| 17 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票 |
-| 18 | `/api/master` | GET | 股票主数据 |
-| 19 | `/api/master/{stock_code}` | GET | 单只股票主数据 |
-| 20 | `/api/metadata/tables` | GET | 元数据-所有表定义 |
-| 21 | `/api/metadata/tables/{table_name}` | GET | 元数据-单表定义 |
-| 22 | `/api/metadata/search?q=` | GET | 元数据搜索 |
-| 23 | `/api/quality` | GET | 质量检查 |
-| 24 | `/api/quality/history` | GET | 质量检查历史 |
+| 2 | `/api/stocks` | GET | 股票列表（`with_price=true` 时带最新价） |
+| 3 | `/api/basic_info` | GET | 批量基础信息（含最新收盘价，回测取价推荐用这个） |
+| 4 | `/api/latest` | GET | 各股票最新数据日期 |
+| 5 | `/api/daily/{stock_code}` | GET | 日线行情 |
+| 6 | `/api/indicators/technical/{stock_code}` | GET | 技术指标 |
+| 7 | `/api/indicators/valuation/{stock_code}` | GET | 估值指标 |
+| 8 | `/api/indicators/financial/{stock_code}` | GET | 财务指标（中间表，含算好的比率） |
+| 9 | `/api/financial/{stock_code}` | GET | 财务原始报表（含 current_assets / current_liabilities） |
+| 10 | `/api/summary/{stock_code}` | GET | 单股综合摘要（价格+估值+财务+北向，附不可用字段原因） |
+| 11 | `/api/northbound/market` | GET | 北向资金**整体**流向（个股接口失效后的替代） |
+| 12 | `/api/northbound/{stock_code}` | GET | 北向资金（**个股数据止于 2024-08-16**） |
+| 13 | `/api/margin/{stock_code}` | GET | 融资融券 |
+| 14 | `/api/capital/{stock_code}` | GET | 股本数据 |
+| 15 | `/api/dividends/{stock_code}` | GET | 分红数据 |
+| 16 | `/api/announcements/{stock_code}` | GET | 公告数据 |
+| 17 | `/api/dragon/{stock_code}` | GET | 龙虎榜 |
+| 18 | `/api/industry/{stock_code}` | GET | 个股行业信息 |
+| 19 | `/api/industry/list` | GET | 行业列表（含成分股数量） |
+| 20 | `/api/industry/{industry_name}/stocks` | GET | 行业内股票（全市场，样本充足） |
+| 21 | `/api/master` | GET | 股票主数据 |
+| 22 | `/api/master/{stock_code}` | GET | 单只股票主数据（含最新收盘价 `close_price`） |
+
+> 排序约定：**所有列表接口均为日期降序（最新在前）**，`limit=1` 即取最新一条。
+> `daily` / `technical` / `valuation` 按 `trade_date` 降序；`financial` 按 `report_date` 降序；
+> `capital` 按 `record_date` 降序。
+
 
 ---
 
@@ -107,10 +146,13 @@
 | low_20 | float | 20日最低 | ✓ |
 | high_60 | float | 60日最高 | ✓ |
 | low_60 | float | 60日最低 | ✓ |
-| **turnover** | float | 换手率（%） | ⚠️ **当前恒为 null** |
-| **outstanding_share** | int | 流通股本 | ⚠️ **当前恒为 null** |
+| **turnover** | float | 换手率（%） | ✓ 已填充 |
+| **outstanding_share** | int | 流通股本 | ✓ 已填充 |
 
-> **已知问题**：`turnover`（换手率）和 `outstanding_share`（流通股本）字段存在但未填充数据。如需换手率，可调用 `/api/capital/{stock_code}` 获取总股本后自行计算：`换手率 = volume / total_shares × 100`。
+> **换手率说明**：`turnover` 由 `volume / outstanding_share × 100` 计算，**绝大多数行有值**。
+> 仅两类行为 NULL：① ETF（如 sh513700，本身无流通股本概念）；
+> ② 个股在 `outstanding_share` 缺失的日期（数据源未返回股本）。
+> 若某只股票长期全空，请检查 `stock_capital` 是否有该股票的股本记录。
 
 ---
 
@@ -170,8 +212,15 @@
 | used_announcement_date | string | 使用的公告日期 | |
 
 > **重要说明**：
-> - **PE_TTM 为负值是正常现象**，表示公司亏损（如 sz002272 2026Q1 亏损，PE_TTM = -381）。调用方应判断 `pe_ttm < 0` 时标注"公司亏损，PE 不适用"，而非报错。
+> - **PE_TTM 为负值是正常现象**，表示公司亏损（如 sz002272 2026Q2 亏损，PE_TTM 为负）。调用方应判断 `pe_ttm < 0` 时标注"公司亏损，PE 不适用"，而非报错。
 > - **没有 `pe` 字段**，只有 `pe_ttm` 和 `pe_annual`，请勿调用 `pe`。
+> - **本接口不返回 `close`（收盘价）**。估值表只存比率，不存价格。需要收盘价请调
+>   `/api/daily/{code}` 或 `/api/master/{code}`（字段 `close_price`）。
+>   调用方若写 `valuation.get("close", 0)` 会**恒得 0**——这不是数据缺失，是字段不存在。
+> - **日期对齐**：估值表的 `trade_date` 与日线表的 `trade_date` 一一对应，
+>   `limit=1` 取到的最新估值行**一定能**在 `/api/daily` 找到同日的 `close`。
+>   若发现估值最新日期晚于日线，说明采集流程被中断，重跑一次数据更新或
+>   `python scripts/recalc_indicators.py` 即可（估值计算会整体重写并清除异常行）。
 
 ---
 
@@ -202,13 +251,25 @@
 | inventory_turnover_annual | float | 存货周转率 | ✓ |
 | accounts_receivable_turnover_annual | float | 应收账款周转率 | ✓ |
 | fcf_ttm | float | 自由现金流TTM | ✓ |
-| **current_ratio** | - | 流动比率 | ❌ **不存在** |
-| **quick_ratio** | - | 速动比率 | ❌ **不存在** |
-| **gross_margin** | - | 毛利率（无后缀） | ❌ **不存在，请用 gross_margin_ttm** |
+| **current_ratio** | float | 流动比率（已算好） | ✓ |
+| **quick_ratio** | float | 速动比率（已算好） | ✓ |
+| inventory | float | 存货 | ✓ |
+| accounts_receivable | float | 应收账款 | ✓ |
+| **current_assets** | - | 流动资产 | ❌ 本接口无，见 `/api/financial/{code}` |
+| **current_liabilities** | - | 流动负债 | ❌ 本接口无，见 `/api/financial/{code}` |
+| **cash** | - | 货币资金 | ❌ 未采集 |
+| gross_margin_annual / gross_margin_ttm | float | 毛利率 | ✓ |
 
-> **已知问题**：
-> 1. **没有 `current_ratio`（流动比率）和 `quick_ratio`（速动比率）字段**。当前财务中间表未采集流动资产/流动负债数据，无法计算。调用方应将这两个指标标注为"数据源未提供"。
-> 2. **毛利率字段名带后缀**：`gross_margin_annual`（年度毛利率）、`gross_margin_ttm`（TTM毛利率），**没有不带后缀的 `gross_margin` 字段**。
+> **重要说明**：
+> 1. **`current_ratio` / `quick_ratio` 已由服务端算好并返回**，请**直接使用**，
+>    不要用 `current_assets / current_liabilities` 自行相除——本接口（中间表）不含这两个原始字段，
+>    自行相除会得到 0 或异常值。
+> 2. **`receivables` 的正确字段名是 `accounts_receivable`**。
+> 3. 需要**原始资产负债科目**（`current_assets`、`current_liabilities`、`inventory`、
+>    `accounts_receivable`、`total_assets`、`total_liabilities`）请调
+>    `/api/financial/{stock_code}`（原始报表），而不是本接口。
+> 4. `cash`（货币资金）目前**数据源未采集**，任何接口都不提供。
+> 5. 毛利率字段名带后缀：用 `gross_margin_ttm`，**没有**不带后缀的 `gross_margin`。
 
 ---
 
@@ -228,7 +289,10 @@
 | inflow_10d | float | 10日累计净流入 |
 | inflow_30d | float | 30日累计净流入 |
 
-> ⚠️ **数据源已失效**：AKShare 北向资金接口已不可用，当前所有股票的北向资金数据可能为空（`count: 0`）。调用方应处理空数据情况，标注"北向资金数据暂不可用"。
+> ⚠️ **个股北向资金数据止于 2024-08-16**：因监管政策调整，交易所自 2024-08-16 起停止披露
+> 个股级北向持股明细，**这是政策原因，不是数据源故障，无需修复**。
+> 2024-08-16 之后的**整体**（沪深港通合计）流向仍可通过 `/api/northbound/market` 获取，
+> 该接口数据持续更新至今。
 
 ---
 
@@ -317,25 +381,32 @@
 
 ### 问题 1：股价 = 0.0
 
-**根因**：调用方取错字段或未正确解析嵌套结构。
+**排查顺序（先查覆盖度，再查字段）**：
+
+1. **该股票在覆盖清单里吗？**（见"零、数据覆盖范围"）范围外股票 `count: 0`，调用方若写
+   `data[0]` 会 IndexError，若写 `data[0].get("close", 0)` 会得 0。
+2. **是否把估值接口当成了行情接口？** `/api/indicators/valuation` **不含 `close` 字段**，
+   `valuation.get("close", 0)` 恒得 0。收盘价应取自 `/api/daily`、`/api/master/{code}` 的
+   `close_price`，或 `/api/basic_info`。
+3. **是否取错了数组下标？** 所有列表接口按日期**降序**，`data[0]` 是最新，
+   `data[-1]` 是最旧（早期数据）。
 
 **修复**：
 ```python
-# 正确取法
 resp = requests.get(f"{BASE_URL}/api/daily/{code}?limit=1").json()
-if resp["count"] > 0:
-    close = resp["data"][0]["close"]  # 取 data 数组的第一条的 close 字段
-else:
-    close = None  # 无数据
+close = resp["data"][0]["close"] if resp.get("count") else None
+if close is None:
+    # 先判断是否在覆盖清单内, 再判断是否停牌/未采集
+    print(f"{code} 无日线数据(不在覆盖清单/停牌/未采集)")
 ```
 
-**验证**：`sz002272` 最新收盘价（2026-06-08）= **18.32**，非 0。
+**验证**：22 只覆盖股票的最新 `close` 全部非 0 非空（如 sz300750 = 291.99，sz002594 = 83.35）。
 
 ---
 
 ### 问题 2：MA5/MA20 缺失
 
-**根因**：调用方可能调用了错误接口，或字段名拼写错误。
+**根因**：调用了错误接口，或字段名拼写错误。
 
 **修复**：
 ```python
@@ -346,15 +417,30 @@ if resp["count"] > 0:
     ma20 = resp["data"][0]["ma20"] # 小写 ma20
 ```
 
-**验证**：`sz002272` 的 ma5=19.38, ma20=20.97，数据完整。
-
 ---
 
 ### 问题 3：流动比率/速动比率 = 0
 
-**根因**：API **不提供**这两个字段。
+**根因**：调用方用 `current_assets / current_liabilities` 自行相除，但
+`/api/indicators/financial`（中间表）**不含这两个原始字段**，相除必然得 0 或异常值。
 
-**修复**：调用方应移除对 `current_ratio`、`quick_ratio` 的依赖，或标注为"数据源未提供"。后续版本会补充。
+**修复**：
+```python
+# 直接取服务端算好的比率(中间表接口)
+r = requests.get(f"{BASE_URL}/api/indicators/financial/{code}?limit=1").json()
+d = r["data"][0]
+current_ratio = d["current_ratio"]   # 已算好, 直接用
+quick_ratio   = d["quick_ratio"]
+
+# 若要原始科目, 用原始报表接口
+raw = requests.get(f"{BASE_URL}/api/financial/{code}?limit=1").json()["data"][0]
+current_assets      = raw["current_assets"]
+current_liabilities = raw["current_liabilities"]
+```
+
+**验证**：两表口径一致（sz002594 手算 0.8705 = 中间表 0.8705；sz300750 1.5595 = 1.5595）。
+
+> 注意：`cash`（货币资金）目前未采集，任何接口都不提供。
 
 ---
 
@@ -394,39 +480,76 @@ else:
 
 ### 问题 6：北向资金缺失
 
-**根因**：数据源（AKShare）接口已失效。
+**根因**：个股级北向资金自 **2024-08-16** 起停止披露（监管政策），非数据源故障。
 
-**修复**：
+**修复**：区分历史与最新，并改用整体流向兜底。
 ```python
 resp = requests.get(f"{BASE_URL}/api/northbound/{code}").json()
 if resp["count"] == 0:
-    northbound_status = "北向资金数据暂不可用（数据源失效）"
+    nb_status = "非沪深港通标的"
 else:
-    northbound_data = resp["data"]
+    nb_latest = resp["data"][0]        # 最新日期不会晚于 2024-08-16
+    if nb_latest["trade_date"] < "2024-08-16":
+        nb_status = "个股北向数据已于 2024-08-16 停止披露（政策原因）"
+
+# 需要最新的北向整体资金, 用这个接口(数据持续更新)
+market = requests.get(f"{BASE_URL}/api/northbound/market?limit=5").json()
 ```
 
 ---
 
 ### 问题 7：换手率缺失
 
-**根因**：`turnover` 字段当前恒为 null。
+**根因**：`turnover` 已正常填充，NULL 仅出现在 ETF（无流通股本概念）和
+个别 `outstanding_share` 缺失的日期。**不再是"恒为 null"。**
 
-**临时修复**（调用方自行计算）：
+**修复**：直接取用；为空时按上文口径回退计算。
 ```python
-# 1. 获取总股本
-capital_resp = requests.get(f"{BASE_URL}/api/capital/{code}").json()
-total_shares = capital_resp["data"][0]["total_shares"] if capital_resp["count"] > 0 else None
+daily = requests.get(f"{BASE_URL}/api/daily/{code}?limit=1").json()["data"][0]
+turnover = daily["turnover"]
 
-# 2. 获取日线数据
-daily_resp = requests.get(f"{BASE_URL}/api/daily/{code}?limit=1").json()
-daily = daily_resp["data"][0]
-
-# 3. 计算换手率
-if total_shares and total_shares > 0:
-    turnover = daily["volume"] / total_shares * 100  # 单位：%
-else:
-    turnover = None
+if turnover is None and daily.get("outstanding_share"):
+    turnover = daily["volume"] / daily["outstanding_share"] * 100   # %
+elif turnover is None:
+    turnover = None   # ETF 或股本缺失, 标注 N/A 而非 0
 ```
+
+---
+
+### 问题 8：总股本取不到
+
+**根因**：股票不在覆盖清单内（范围内 21 只均有值）。注意日期字段是 `record_date`。
+
+**修复**：
+```python
+resp = requests.get(f"{BASE_URL}/api/capital/{code}").json()
+if resp["count"] == 0:
+    print(f"{code} 不在数据覆盖范围内（见文档「零、数据覆盖范围」）")
+    total_shares = None
+else:
+    total_shares = resp["data"][0]["total_shares"]   # 降序, [0] 即最新
+```
+
+---
+
+### 问题 9：同行业可比公司只有 1 只
+
+**根因**：旧版本 `stock_industry` 只登记自选股，样本不足。
+
+**已修复**：现全市场行业成分已入库（5223 只 / 84 个行业，最大行业组 666 只）。
+
+**修复**：先查行业名，再取成分股。
+```python
+info = requests.get(f"{BASE_URL}/api/industry/{code}").json()
+industry_name = info["data"][0]["industry_name"]          # 如 "C36汽车制造业"
+
+peers = requests.get(
+    f"{BASE_URL}/api/industry/{quote(industry_name)}/stocks"
+).json()
+peer_codes = [x["stock_code"] for x in peers["data"]]     # 全市场同业清单
+```
+> 实操建议：可比公司通常还需叠加规模/业务筛选。行业成分已给全量，
+> 可再用 `/api/basic_info?stock_codes=...` 批量取价与估值做二次筛选。
 
 ---
 
@@ -444,54 +567,49 @@ else:
 
 ---
 
-## 七、元数据查询接口
+## 七、已下线接口
 
-如需查询任意表的完整字段定义，调用：
+以下接口**代码已移除**，调用会返回 404，请勿依赖：
 
-```
-GET /api/metadata/tables/{table_name}
-```
+- `/api/metadata/*`（数据字典，原 `src/metadata/` 已删除）
+- `/api/quality/*`（质量检查，原 `src/quality/` 已删除）
 
-示例：
-```
-GET /api/metadata/tables/financial_intermediate
-```
-
-返回该表所有字段的：字段名、显示名、描述、数据类型、是否可空、数据来源、计算公式、单位、示例值。
-
-**搜索字段**：
-```
-GET /api/metadata/search?q=毛利率
-```
+字段定义请直接查阅 `src/database/models.py` 的建表语句。
 
 ---
 
-## 八、快速验证脚本
+## 八、快速验证
+
+仓库自带冒烟测试脚本，覆盖上述全部易错点（收盘价、估值口径与日期对齐、
+两表流动比率一致性、股本、行业样本量），启动 API 后执行：
+
+```bash
+python api/main.py                 # 另开一个窗口启动服务
+python scripts/smoke_test_api.py   # 全量断言, 全 PASS 即接口正常
+```
+
+手工快速核对某只股票：
 
 ```python
 import requests
+s = requests.Session(); s.trust_env = False   # 绕过系统代理, 否则 localhost 会被代理拦截返回 502
 
-BASE = "http://localhost:8001"
-code = "sz002272"
+BASE = "http://127.0.0.1:8001"
+code = "sz300750"
 
-# 1. 日线（股价）
-r = requests.get(f"{BASE}/api/daily/{code}?limit=1").json()
-print(f"收盘价: {r['data'][0]['close']}")  # 18.32
+r = s.get(f"{BASE}/api/daily/{code}", params={"limit": 1}).json()
+print("收盘价:", r["data"][0]["close"], "换手率:", r["data"][0]["turnover"])
 
-# 2. 技术指标（MA5/MA20）
-r = requests.get(f"{BASE}/api/indicators/technical/{code}?limit=1").json()
-print(f"MA5: {r['data'][0]['ma5']}, MA20: {r['data'][0]['ma20']}")  # 19.38, 20.97
+v = s.get(f"{BASE}/api/indicators/valuation/{code}", params={"limit": 1}).json()
+print("估值日:", v["data"][0]["trade_date"], "PE_TTM:", v["data"][0]["pe_ttm"],
+      "| 注意: 估值接口不含 close 字段")
 
-# 3. 估值（PE_TTM）
-r = requests.get(f"{BASE}/api/indicators/valuation/{code}?limit=1").json()
-print(f"PE_TTM: {r['data'][0]['pe_ttm']}")  # -381.00（亏损，正常）
+f = s.get(f"{BASE}/api/indicators/financial/{code}", params={"limit": 1}).json()
+print("流动比率:", f["data"][0]["current_ratio"], "存货:", f["data"][0]["inventory"])
 
-# 4. 财务（毛利率）
-r = requests.get(f"{BASE}/api/indicators/financial/{code}?limit=1").json()
-print(f"毛利率TTM: {r['data'][0]['gross_margin_ttm']}")  # 有值
-print(f"流动比率: {r['data'][0].get('current_ratio', '字段不存在')}")  # 字段不存在
-
-# 5. 北向资金
-r = requests.get(f"{BASE}/api/northbound/{code}").json()
-print(f"北向资金条数: {r['count']}")  # 0（数据源失效）
+c = s.get(f"{BASE}/api/capital/{code}").json()
+print("总股本:", c["data"][0]["total_shares"])
 ```
+
+> **踩坑提示**：若用 `requests` 请求 `localhost` 得到 `502 upstream connect failed`，
+> 是本机 HTTP 代理拦截所致，设置 `session.trust_env = False` 即可。
