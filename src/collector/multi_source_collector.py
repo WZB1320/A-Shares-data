@@ -4,9 +4,12 @@
 - mootdx: 日线行情 (TCP直连, 最稳定)
 - baostock: 股本/行业/分红 (免费稳定)
 - tencent: 估值PE/PB (零鉴权)
-- akshare: 财务数据/融资融券/公告/龙虎榜 (独有数据)
+- akshare: 融资融券/公告/龙虎榜 (独有数据)
+- financial_service: 财务数据 (主源 AKShare Sina + 备源 BaoStock)
 
-每个采集步骤都有主源+备源, 主源失败自动回退
+降级链:
+- 日线行情: mootdx主 -> AKShare备
+- 财务数据: AKShare Sina主 -> BaoStock备 (字段最小集, 用 COALESCE 保护已有数据)
 """
 import logging
 from .base import BaseCollector
@@ -14,6 +17,7 @@ from .mootdx_collector import MootdxCollector
 from .baostock_collector import BaostockCollector
 from .tencent_collector import TencentCollector
 from .eastmoney import EastmoneyCollector
+from .financial_service import FinancialService
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,7 @@ class MultiSourceCollector(BaseCollector):
         self.baostock = BaostockCollector(db_ops, start_date)
         self.tencent = TencentCollector(db_ops, start_date)
         self.akshare = EastmoneyCollector(db_ops, start_date)
+        self.financial_service = FinancialService(db_ops, start_date)
 
     def collect_stock(self, stock_code: str):
         """按优先级依次采集各类型数据"""
@@ -39,7 +44,7 @@ class MultiSourceCollector(BaseCollector):
             ("行业数据", self._collect_industry),
             ("分红数据", self._collect_dividend),
 
-            # 财务数据: AKShare Sina (字段最全)
+            # 财务数据: AKShare Sina主 -> BaoStock备 (走降级基类)
             ("财务数据", self._collect_financial),
             ("财务补充", self._collect_financial_supplement),
             ("资产负债表补充", self._collect_balance_sheet),
@@ -85,16 +90,29 @@ class MultiSourceCollector(BaseCollector):
         self.baostock.collect_dividend_data(stock_code)
 
     def _collect_financial(self, stock_code: str):
-        """财务数据: AKShare Sina"""
-        self.akshare.collect_financial_data(stock_code)
+        """财务数据: AKShare Sina主 -> AKShare EM中备 -> BaoStock末备 (3 源降级)
+
+        - 主源 Sina: 字段最全 (19 字段), 全字段覆盖
+        - 中备 EM:   字段接近主源 (18 字段), 用 COALESCE 保护已有数据
+        - 末备 BaoStock: 仅 net_profit + total_revenue 2 字段, 非归母口径兜底
+        """
+        self.collect_with_fallback(
+            stock_code,
+            sources=[
+                (lambda: self.financial_service.collect_from_akshare(stock_code), "akshare_sina"),
+                (lambda: self.financial_service.collect_from_akshare_em(stock_code), "akshare_em"),
+                (lambda: self.financial_service.collect_from_baostock(stock_code), "baostock"),
+            ],
+            step_name="财务数据",
+        )
 
     def _collect_financial_supplement(self, stock_code: str):
-        """财务补充: AKShare EM"""
-        self.akshare._update_missing_financial_fields(stock_code)
+        """财务补充: AKShare EM (扣非净利润/利息支出)"""
+        self.financial_service.update_missing_financial_fields(stock_code)
 
     def _collect_balance_sheet(self, stock_code: str):
-        """资产负债表补充: AKShare EM"""
-        self.akshare._update_balance_sheet_fields(stock_code)
+        """资产负债表补充: AKShare EM (流动资产/流动负债)"""
+        self.financial_service.update_balance_sheet_fields(stock_code)
 
     def _collect_valuation(self, stock_code: str):
         """估值数据: 腾讯财经"""
