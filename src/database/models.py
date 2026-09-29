@@ -57,6 +57,7 @@ def init_tables(conn):
         interest_expense DECIMAL(18,2),
         current_assets DECIMAL(18,2),
         current_liabilities DECIMAL(18,2),
+        monetary_funds DECIMAL(18,2),
         PRIMARY KEY (stock_code, report_date, report_type)
     )
     """)
@@ -405,5 +406,18 @@ def init_tables(conn):
         notes VARCHAR(255)
     )
     """)
+
+    # ---- 幂等迁移: 老库补列 ----
+    existing = {
+        r[0] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'financial_statements'"
+        ).fetchall()
+    }
+    if "monetary_funds" not in existing:
+        conn.execute(
+            "ALTER TABLE financial_statements ADD COLUMN monetary_funds DECIMAL(18,2)"
+        )
+        logger.info("financial_statements 已迁移: 新增 monetary_funds 列")
 
     logger.info("数据库表结构初始化完成")

@@ -49,6 +49,18 @@ def main():
     h = get("/api/health")
     check("GET /api/health", h.get("status") == "ok", str(h.get("db_path")))
 
+    # ---- 0.5 覆盖度自检 ----
+    print("\n[0.5] /api/coverage 覆盖度自检")
+    cov = get("/api/coverage")
+    check("coverage master=22", cov.get("master_count") == 22, str(cov.get("master_count")))
+    tbl_map = {t["table"]: t for t in cov.get("tables", []) if "error" not in t}
+    daily_cov = tbl_map.get("stock_daily", {})
+    check("coverage stock_daily 全覆盖", daily_cov.get("missing_stocks") == [],
+          f"missing={daily_cov.get('missing_stocks')}")
+    val_cov = tbl_map.get("valuation_indicators", {})
+    check("coverage 估值表缺 ETF 而已", val_cov.get("missing_stocks") in [[], ["sh513700"]],
+          f"missing={val_cov.get('missing_stocks')}")
+
     # ---- 1. 日线: close 非 0/null + 排序降序 ----
     print("\n[1] /api/daily 收盘价与排序")
     for code in args.stocks:
@@ -84,6 +96,15 @@ def main():
         pe = vr.get("pe_ttm")
         check(f"{code} pe_ttm 合理(非±0.x量级)", pe is not None and abs(float(pe)) > 1,
               f"pe_ttm={pe} pb={vr.get('pb')}")
+        close_v = vr.get("close")
+        close_d = dr.get("close")
+        ok_close_join = (
+            close_v is not None and float(close_v) != 0
+            and close_d is not None
+            and abs(float(close_v) - float(close_d)) <= max(0.01, abs(float(close_d)) * 0.001)
+        )
+        check(f"{code} 估值接口close与日线一致", ok_close_join,
+              f"val_close={close_v} daily_close={close_d}")
 
     # ---- 3. 财务: 中间表 + 原始表口径一致 ----
     print("\n[3] /api/indicators/financial 与 /api/financial")

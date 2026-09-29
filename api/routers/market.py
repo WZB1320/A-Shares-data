@@ -77,8 +77,15 @@ def get_valuation_indicators(
     limit: int = Query(10000, ge=1, le=100000),
     conn: duckdb.DuckDBPyConnection = Depends(get_db),
 ):
+    """估值指标 + 同日收盘价(close)
+
+    估值表本身不存 close(避免与日线双写不一致), 此处按
+    (stock_code, trade_date) 联结 stock_daily 实时带出。
+    LEFT JOIN: 估值行必定有同日日线(采集端护栏), close 理论上不会为 NULL。
+    """
     sql, params = build_query(
-        "SELECT * FROM valuation_indicators",
+        "SELECT v.*, d.close FROM valuation_indicators v "
+        "LEFT JOIN stock_daily d USING (stock_code, trade_date)",
         stock_code=stock_code, start_date=start_date, end_date=end_date,
         limit=limit,
     )

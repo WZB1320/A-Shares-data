@@ -190,10 +190,11 @@ class FinancialService(BaseCollector):
             logger.warning(f"[akshare] {stock_code} 东方财富补充采集失败：{e}")
 
     def update_balance_sheet_fields(self, stock_code: str):
-        """补充: 通过东方财富EM资产负债表补充流动资产/流动负债字段
+        """补充: 通过东方财富EM资产负债表补充流动资产/流动负债/货币资金字段
 
         数据源: ak.stock_balance_sheet_by_report_em
-        补充字段: current_assets(TOTAL_CURRENT_ASSETS), current_liabilities(TOTAL_CURRENT_LIAB)
+        补充字段: current_assets(TOTAL_CURRENT_ASSETS), current_liabilities(TOTAL_CURRENT_LIAB),
+                  monetary_funds(MONETARYFUNDS, 即货币资金/cash)
         """
         from .rate_limiter import akshare_rate_limited
 
@@ -214,25 +215,29 @@ class FinancialService(BaseCollector):
 
             df['report_date'] = pd.to_datetime(df['REPORT_DATE']).dt.date
 
-            # 事务保证: 流动资产/负债批量 UPDATE 原子化
+            # 事务保证: 资产负债表补充字段批量 UPDATE 原子化
             with self.db_ops.transaction():
                 for _, row in df.iterrows():
                     rd = row['report_date']
                     current_assets = row.get('TOTAL_CURRENT_ASSETS')
                     current_liab = row.get('TOTAL_CURRENT_LIAB')
+                    monetary_funds = row.get('MONETARYFUNDS')
 
-                    if pd.notna(current_assets) or pd.notna(current_liab):
+                    if pd.notna(current_assets) or pd.notna(current_liab) \
+                            or pd.notna(monetary_funds):
                         self.db_ops.conn.execute("""
                             UPDATE financial_statements
                             SET current_assets = ?,
-                                current_liabilities = ?
+                                current_liabilities = ?,
+                                monetary_funds = ?
                             WHERE stock_code = ? AND report_date = ?
                         """, [
                             float(current_assets) if pd.notna(current_assets) else None,
                             float(current_liab) if pd.notna(current_liab) else None,
+                            float(monetary_funds) if pd.notna(monetary_funds) else None,
                             stock_code, rd
                         ])
-            logger.info(f"[akshare] {stock_code} 资产负债表字段补充完成")
+            logger.info(f"[akshare] {stock_code} 资产负债表字段补充完成(含货币资金)")
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 资产负债表字段补充失败: {e}")
 

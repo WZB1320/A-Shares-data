@@ -305,3 +305,69 @@ def get_latest(
             for r in rows
         ]
     }
+
+
+# 各数据表 -> 日期列(用于覆盖度统计)
+_COVERAGE_TABLES = {
+    "stock_daily": "trade_date",
+    "technical_indicators": "trade_date",
+    "valuation_indicators": "trade_date",
+    "margin_trading": "trade_date",
+    "capital_flow": "trade_date",
+    "financial_intermediate": "report_date",
+    "financial_statements": "report_date",
+    "stock_capital": "record_date",
+    "dividends": "dividend_date",
+    "dragon_tiger": "trade_date",
+}
+
+
+@router.get("/api/coverage")
+def get_coverage(conn: duckdb.DuckDBPyConnection = Depends(get_db)):
+    """数据覆盖度自检: 各表覆盖股票数/行数/最新日期, 及与主数据(权威清单)的差异
+
+    调用方拿到空数据时, 先看这里判断是"未覆盖"还是"字段问题"。
+    ETF 不参与仅股票类指标(估值/财务/股本/分红)的统计, 覆盖数少 1 属正常。
+    """
+    master = conn.execute(
+        "SELECT stock_code, stock_name, is_etf FROM stock_master ORDER BY stock_code"
+    ).fetchall()
+    master_codes = [r[0] for r in master]
+    etf_codes = {r[0] for r in master if r[2]}
+
+    tables = []
+    for table, date_col in _COVERAGE_TABLES.items():
+        try:
+            rows = conn.execute(
+                f"SELECT stock_code, COUNT(*), MAX({date_col}) FROM {table} "
+                "GROUP BY stock_code ORDER BY stock_code"
+            ).fetchall()
+        except duckdb.Error:
+            tables.append({"table": table, "date_column": date_col, "error": "表不存在"})
+            continue
+
+        have = {r[0] for r in rows}
+        # 对"仅股票"的表, ETF 不计入缺失
+        missing = [c for c in master_codes if c not in have and not (
+            c in etf_codes and table in {
+                "valuation_indicators", "financial_intermediate",
+                "financial_statements", "stock_capital", "dividends",
+            }
+        )]
+        tables.append({
+            "table": table,
+            "date_column": date_col,
+            "stocks": len(have),
+            "rows": sum(r[1] for r in rows),
+            "latest_date": max((r[2].isoformat() for r in rows if r[2]), default=None),
+            "missing_stocks": missing,
+            "per_stock_latest": {
+                r[0]: (r[2].isoformat() if r[2] else None) for r in rows
+            },
+        })
+
+    return {
+        "master_count": len(master_codes),
+        "etf_codes": sorted(etf_codes),
+        "tables": tables,
+    }

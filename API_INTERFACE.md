@@ -65,7 +65,7 @@ sz002843 华懋新材   sz300750 宁德时代
 | 6 | `/api/indicators/technical/{stock_code}` | GET | 技术指标 |
 | 7 | `/api/indicators/valuation/{stock_code}` | GET | 估值指标 |
 | 8 | `/api/indicators/financial/{stock_code}` | GET | 财务指标（中间表，含算好的比率） |
-| 9 | `/api/financial/{stock_code}` | GET | 财务原始报表（含 current_assets / current_liabilities） |
+| 9 | `/api/financial/{stock_code}` | GET | 财务原始报表（含 current_assets / current_liabilities / monetary_funds） |
 | 10 | `/api/summary/{stock_code}` | GET | 单股综合摘要（价格+估值+财务+北向，附不可用字段原因） |
 | 11 | `/api/northbound/market` | GET | 北向资金**整体**流向（个股接口失效后的替代） |
 | 12 | `/api/northbound/{stock_code}` | GET | 北向资金（**个股数据止于 2024-08-16**） |
@@ -221,13 +221,14 @@ sz002843 华懋新材   sz300750 宁德时代
 | roe_annual | float | 年度ROE | 可能为 null |
 | used_report_date | string | 使用的财报日期 | |
 | used_announcement_date | string | 使用的公告日期 | |
+| close | float | 同日收盘价（联结日线带出） | 与 `/api/daily` 同日 close 一致 |
 
 > **重要说明**：
 > - **PE_TTM 为负值是正常现象**，表示公司亏损（如 sz002272 2026Q2 亏损，PE_TTM 为负）。调用方应判断 `pe_ttm < 0` 时标注"公司亏损，PE 不适用"，而非报错。
 > - **没有 `pe` 字段**，只有 `pe_ttm` 和 `pe_annual`，请勿调用 `pe`。
-> - **本接口不返回 `close`（收盘价）**。估值表只存比率，不存价格。需要收盘价请调
->   `/api/daily/{code}` 或 `/api/master/{code}`（字段 `close_price`）。
->   调用方若写 `valuation.get("close", 0)` 会**恒得 0**——这不是数据缺失，是字段不存在。
+> - **`close` 已提供**（2026-09-29 起）：估值表本身不存价格，接口按
+>   `(stock_code, trade_date)` 联结 `stock_daily` 实时带出，与日线同源不会出现
+>   两处不一致。也可继续用 `/api/daily/{code}` 或 `/api/master/{code}`（字段 `close_price`）。
 > - **日期对齐**：估值表的 `trade_date` 与日线表的 `trade_date` 一一对应，
 >   `limit=1` 取到的最新估值行**一定能**在 `/api/daily` 找到同日的 `close`。
 >   若发现估值最新日期晚于日线，说明采集流程被中断，重跑一次数据更新或
@@ -268,7 +269,7 @@ sz002843 华懋新材   sz300750 宁德时代
 | accounts_receivable | float | 应收账款 | ✓ |
 | **current_assets** | - | 流动资产 | ❌ 本接口无，见 `/api/financial/{code}` |
 | **current_liabilities** | - | 流动负债 | ❌ 本接口无，见 `/api/financial/{code}` |
-| **cash** | - | 货币资金 | ❌ 未采集 |
+| **monetary_funds** | - | 货币资金 | ❌ 本接口无，见 `/api/financial/{code}`（2026-09-29 起提供） |
 | gross_margin_annual / gross_margin_ttm | float | 毛利率 | ✓ |
 
 > **重要说明**：
@@ -276,10 +277,11 @@ sz002843 华懋新材   sz300750 宁德时代
 >    不要用 `current_assets / current_liabilities` 自行相除——本接口（中间表）不含这两个原始字段，
 >    自行相除会得到 0 或异常值。
 > 2. **`receivables` 的正确字段名是 `accounts_receivable`**。
-> 3. 需要**原始资产负债科目**（`current_assets`、`current_liabilities`、`inventory`、
->    `accounts_receivable`、`total_assets`、`total_liabilities`）请调
+> 3. 需要**原始资产负债科目**（`current_assets`、`current_liabilities`、`monetary_funds`、
+>    `inventory`、`accounts_receivable`、`total_assets`、`total_liabilities`）请调
 >    `/api/financial/{stock_code}`（原始报表），而不是本接口。
-> 4. `cash`（货币资金）目前**数据源未采集**，任何接口都不提供。
+> 4. **没有名为 `cash` 的字段**：货币资金的正确字段名是 **`monetary_funds`**（2026-09-29 起在
+>    `/api/financial/{stock_code}` 提供），调用 `cash` 会拿不到数据。
 > 5. 毛利率字段名带后缀：用 `gross_margin_ttm`，**没有**不带后缀的 `gross_margin`。
 
 ---
@@ -483,7 +485,8 @@ current_liabilities = raw["current_liabilities"]
 
 **验证**：两表口径一致（sz002594 手算 0.8705 = 中间表 0.8705；sz300750 1.5595 = 1.5595）。
 
-> 注意：`cash`（货币资金）目前未采集，任何接口都不提供。
+> 注意：货币资金字段名为 **`monetary_funds`**（`/api/financial/{stock_code}`，2026-09-29 起提供），
+> 没有 `cash` 字段。
 
 ---
 
