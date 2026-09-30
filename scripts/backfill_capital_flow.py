@@ -5,14 +5,14 @@
     数据源(东方财富 push2his)单次只返回最近 121 个交易日, 之后靠每日增量累积。
 
 ⚠️ 必须串行执行(不要并发):
-    该主机对突发请求会按 IP 临时封禁, 实测连续请求数十次后所有东财主机
-    全部 RemoteDisconnected。采集器内置了全局节流(MIN_INTERVAL)与退避重试,
-    但把并发压到 1 才能稳定跑完。
+    push2his 的连接有约 1/3 概率被瞬时丢弃(RemoteDisconnected, 0.1~0.3s RST),
+    与请求内容无关, 成功会成簇出现(2026-09-30 定量实测)。
+    采集器内置全局节流(MIN_INTERVAL=1.5s) + 12 次短间隔重试, 单只成功率 >98%;
+    本脚本再加一轮"停顿后重试失败项"兜底。并发会显著拉长冷却期, 务必串行。
 
 用法:
     python scripts/backfill_capital_flow.py                    # 用 config.STOCK_CODES
-    python scripts/backfill_capital_flow.py sh600519 sz002272  # 指定股票
-    python scripts/backfill_capital_flow.py --retry-failed     # 只重试上次失败的
+    python scripts/backfill_capital_flow.py sh600519 sz002272  # 指定股票(只补这些)
 """
 import logging
 import os
@@ -27,8 +27,8 @@ from src.config import DB_PATH, START_DATE, STOCK_CODES  # noqa: E402
 from src.database.operations import DatabaseOperations  # noqa: E402
 from src.collector.fundflow_collector import FundFlowCollector  # noqa: E402
 
-# 批量补采两次之间的停顿(秒): 给限流窗口留出恢复时间
-PASS_PAUSE = 30.0
+# 批量补采两轮之间的停顿(秒): 让可能的冷却窗口过去
+PASS_PAUSE = 15.0
 
 
 def _collect_pass(collector, codes, label):

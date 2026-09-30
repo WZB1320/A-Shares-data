@@ -166,6 +166,18 @@ def main():
                         "holder_num_trend", "reduce_count_recent_90d"):
                 check(f"{code} summary 含 {key}", key in s, "")
 
+    # ---- 7. 龙虎榜: 数据可得 + 字段完整 ----
+    print("\n[7] /api/dragon 龙虎榜")
+    dt = get("/api/dragon/sh600552")   # 凯盛科技: 历史多次上榜, 用来证明采集链路通
+    check("sh600552 龙虎榜有记录", dt.get("count", 0) > 0, f"count={dt.get('count')}")
+    if dt.get("data"):
+        row = dt["data"][0]
+        check("龙虎榜字段完整", all(k in row for k in
+              ("stock_code", "trade_date", "list_type", "reason", "net_amount")),
+              str(list(row.keys()))[:120])
+        ds = [r["trade_date"] for r in dt["data"]]
+        check("龙虎榜日期降序(最新在前)", ds == sorted(ds, reverse=True), f"{ds[:3]}")
+
     # ---- 汇总 ----
     failed = [c for c in CHECKS if not c[1]]
     print("\n" + "=" * 60)

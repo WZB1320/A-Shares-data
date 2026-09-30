@@ -3,10 +3,17 @@
 覆盖 5 类数据: 质押 / 增减持 / 回购 / 限售解禁 / 股东户数。
 回购与解禁是全市场接口(拉全后过滤), 股东户数按股拉取(2 只)。
 
+⚠️ 测试股选择(踩过的坑):
+    测试股必须**能走到每条数据路径**, 否则该路径的 bug 测不出来。
+    曾用 sz000858+sz002272 做测试 —— 这两只解禁数据为空, collect_unlock 在
+    "写水位"分支提前返回, 于是 `date >= pd.Timestamp` 的 TypeError 被完全掩盖,
+    正式回填时才暴露(解禁静默写 0 行)。
+    因此改用 **sz000725(京东方A, 窗口内有解禁记录)** + sz000858(五粮液, 有质押)。
+
 流程:
     1. 临时库 init_tables(建表含全部 risk_* 表);
     2. 写入 stock_master 测试股;
-    3. RiskCollector.collect_risk_all(['sz000858','sz002272']) 真实拉取;
+    3. RiskCollector.collect_risk_all 真实拉取;
     4. 断言: 各表有数据 / 数值合理 / PK 幂等(重跑一次行数不变)。
 """
 import os
@@ -25,18 +32,20 @@ from src.database.models import init_tables  # noqa: E402
 from src.database.operations import DatabaseOperations  # noqa: E402
 from src.collector.risk_collector import RiskCollector  # noqa: E402
 
+TEST_CODES = ["sz000725", "sz000858"]
+
 DB = DatabaseOperations
 DB.init_connection_manager(tmp_db, read_pool_size=2)
 db = DB()
 init_tables(db.cm.write_conn)
 db.cm.write_conn.execute(
     "INSERT INTO stock_master (stock_code, stock_name) VALUES "
-    "('sz000858', '五粮液'), ('sz002272', '川润股份')"
+    "('sz000725', '京东方A'), ('sz000858', '五粮液')"
 )
 
 collector = RiskCollector(db, "2016-01-01")
 print("== 第一轮采集(真实网络, 增减持/回购/解禁为全市场接口) ==", flush=True)
-collector.collect_risk_all(["sz000858", "sz002272"])
+collector.collect_risk_all(TEST_CODES)
 
 TABLES = ("risk_pledge", "risk_holder_change", "risk_buyback",
           "risk_unlock", "risk_holder_num")
@@ -53,7 +62,7 @@ with db.cm.acquire_reader() as reader:
     dump(reader)
 
 print("\n== 第二轮采集(幂等验证) ==", flush=True)
-collector.collect_risk_all(["sz000858", "sz002272"])
+collector.collect_risk_all(TEST_CODES)
 with db.cm.acquire_reader() as reader:
     dump(reader)
 
@@ -89,6 +98,7 @@ os.remove(tmp_db)
 
 assert n_pledge >= 1, "risk_pledge 无数据"
 assert n_hnum >= 1, "risk_holder_num 无数据"
+assert n_unlock >= 1, "risk_unlock 无数据(sz000725 窗口内有解禁记录, 说明该数据路径未被覆盖)"
 assert bad_ratio == 0 and bad_shares == 0 and bad_buyback == 0
 assert bad_unlock == 0 and bad_hnum == 0
-print("\nPASS: 风险面采集端到端验证通过(5 表)")
+print("\nPASS: 风险面采集端到端验证通过(5 表, 含解禁数据路径)")

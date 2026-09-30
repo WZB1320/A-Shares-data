@@ -33,6 +33,15 @@ from src.config import DB_PATH  # noqa: E402
 TOL_AMOUNT = 1.0      # 金额恒等式容差(元)
 TOL_RATIO = 0.05      # 占比闭合容差(百分点)
 
+# 已知的源端异常(东方财富自己的 ratio 字段与自己的净额不自洽), 逐条登记并给出证据,
+# 避免用"放宽容差"来掩盖真问题。登记项从跨源检查中排除并单独打印。
+KNOWN_RATIO_EXCEPTIONS = {
+    # 2026-06-18 东财 main_net_ratio = -12.40, 但 main_net_amount = -869,933,072
+    # 除以当日成交额 3,590,627,072 = -24.23%。本表日线自洽(amount/volume=1225.65
+    # vs close 1220.14, 比值 1.005), 说明是源端 ratio 字段错误, 不是采集错误。
+    ("sh600519", "2026-06-18"): "东财源端 main_net_ratio 与自身净额不自洽(-12.40 vs -24.23)",
+}
+
 
 def main():
     con = duckdb.connect(str(DB_PATH), read_only=True)
@@ -89,7 +98,20 @@ def main():
         WHERE d.amount IS NOT NULL AND d.amount <> 0
         """
     ).fetchone()
-    checks.append((f"跨源: 净额/成交额 == 净占比 (可比 {cross[0]} 行)", cross[1], cross[0]))
+    # 扣除已登记的源端异常行
+    excluded = 0
+    for (code, day) in KNOWN_RATIO_EXCEPTIONS:
+        excluded += con.execute(
+            "SELECT COUNT(*) FROM capital_flow c JOIN stock_daily d "
+            "ON d.stock_code = c.stock_code AND d.trade_date = c.trade_date "
+            "WHERE c.stock_code = ? AND c.trade_date = ? "
+            "AND ABS(c.main_net_amount / d.amount * 100 - c.main_net_ratio) "
+            "> GREATEST(0.05, ABS(c.main_net_ratio) * 0.01)",
+            [code, day],
+        ).fetchone()[0]
+    cross_bad = (cross[1] or 0) - excluded
+    checks.append((f"跨源: 净额/成交额 == 净占比 (可比 {cross[0]} 行,"
+                   f" 排除已知源端异常 {excluded} 行)", cross_bad, cross[0]))
 
     # 5. 孤行
     bad = con.execute(

@@ -391,11 +391,10 @@ class RiskCollector(BaseCollector):
                 conflict_columns=["stock_code", "free_date", "free_type"],
                 update_columns=_UNLOCK_VALUE_COLUMNS,
             )
-            future = out[out["free_date"] >= pd.Timestamp(today)]
-            for code, mx in future.groupby("stock_code")["free_date"].max().items():
-                # 水位写未来最近解禁日(增量语义: 下次采集重拉窗口, PK 幂等)
-                self.db_ops.update_last_update_date(code, "risk_unlock",
-                                                    mx.date().isoformat())
+            # 不写 update_log 水位: 本表是"整窗口全量拉取 + PK 幂等", 没有增量水位语义。
+            # 若写 max(free_date) 会得到未来日期(未来解禁计划), 使水位超前于现实;
+            # 写拉取日期又与实际数据不符。二者都违反"水位=实际入库数据最大日期"的铁律,
+            # 故此处不写(该表不依赖 update_log 做增量判断)。
         logger.info(f"[risk] 解禁写入 {len(out)} 行 "
                     f"(覆盖 {out['stock_code'].nunique()} 只, 窗口 {start}~{end})")
         return len(out)
@@ -462,10 +461,15 @@ class RiskCollector(BaseCollector):
     # --- 编排入口 ---
 
     def collect_risk_all(self, target_codes=None) -> None:
-        """风险面全量采集: 质押快照 + 增减持 + 回购 + 解禁 + 股东户数"""
+        """风险面全量采集: 质押快照 + 增减持 + 回购 + 解禁 + 股东户数
+
+        单个子项失败不阻塞其余子项, 但**必须带堆栈**(exc_info) —— 曾因只打印
+        一行 message 且被上层吞掉, 导致"解禁写 0 行"这种静默失败很难被发现。
+        """
         codes = list(target_codes or [])
         if not codes:
             return
+        failed = []
         for name, fn in (
             ("质押", self.collect_pledge),
             ("增减持", self.collect_holder_change),
@@ -476,4 +480,8 @@ class RiskCollector(BaseCollector):
             try:
                 fn(codes)
             except Exception as e:  # noqa: BLE001
-                logger.error(f"[risk] {name}采集失败: {e}")
+                failed.append(name)
+                logger.error(f"[risk] {name}采集失败: {type(e).__name__}: {e}",
+                             exc_info=True)
+        if failed:
+            logger.error(f"[risk] 本轮有子项失败: {' '.join(failed)}")

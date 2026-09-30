@@ -10,11 +10,18 @@
     (lmt / beg / end 怎么调都一样)。因此策略为: 每次全量拉取这段时间并 UPSERT;
     表内数据随每次运行自然累积超过 121 天(旧数据永不删除)。
 
-⚠️ 限流(实测踩坑):
-    该主机对**突发请求**很敏感, 连续快速请求数十次后会**按 IP 临时封禁**
-    (现象: 所有东财主机都报 RemoteDisconnected, 而腾讯/新浪/百度正常)。
-    因此设了全局最小请求间隔(MIN_INTERVAL) + 指数退避重试(MAX_ATTEMPTS)。
-    批量采集请串行、不要加快并发。
+⚠️ 请求失败的真实机制(2026-09-30 定量实测, 修正早期"IP 封禁"判断):
+    push2his 的连接有约 **1/3 概率被瞬时拒绝**(RemoteDisconnected, 0.1~0.3s 内 RST),
+    成功响应来自不同后端节点(svr 字段 177617925~177617935 轮换)。
+    实测结论:
+      - 失败与**请求内容无关**: lmt=0/5/121、带不带 UA/Referer、两条路径
+        (/fflow/daykline/get 与 /fflow/kline/get) 成功率都在 25~33% 区间随机波动;
+      - 成功会**成簇出现**(连续 4 次全过), 也会出现连续 16 次全败的冷却段;
+      - 长时间(数小时)完全不成功的情况也出现过 —— 疑似突发后的冷却期。
+    因此正确策略是 **短间隔重试直到成功**, 而不是长退避等待:
+    失败是"连接被丢"而非超时, 重试成本极低(每次 ~0.2s)。
+    同时保留全局最小间隔(MIN_INTERVAL)避免把冷却期打成更长的封禁。
+    批量采集请串行、不要加并发。
 
 klines 字段(逗号分隔 15 段):
     [0] 日期        [1] 主力净额    [2] 小单净额    [3] 中单净额
@@ -77,9 +84,9 @@ class FundFlowCollector(BaseCollector):
 
     HTTP_TIMEOUT = 15.0        # 单次请求超时(秒)
     CLOSE_TOLERANCE = 0.01     # 收盘价交叉校验容差(相对 1%)
-    MIN_INTERVAL = 1.5         # 全局最小请求间隔(秒), 防止突发触发 IP 封禁
-    MAX_ATTEMPTS = 4           # 单只股票的最大请求次数(含首次)
-    RETRY_BASE = 3.0           # 指数退避基数: 3s / 6s / 12s (+抖动)
+    MIN_INTERVAL = 1.5         # 全局最小请求间隔(秒), 避免把冷却期打成更长封禁
+    MAX_ATTEMPTS = 12          # 单只股票的最大请求次数(含首次); p≈0.3 时 12 次近 99% 成功
+    RETRY_BASE = 0.8           # 短间隔退避基数: 失败是连接被丢(非超时), 重试成本极低
 
     # 类级节流游标(跨实例共享): 保证无论多少实例, 请求都按 MIN_INTERVAL 串行
     _last_request_at = 0.0
@@ -138,9 +145,11 @@ class FundFlowCollector(BaseCollector):
             except Exception as e:
                 last_error = e
                 if attempt < self.MAX_ATTEMPTS:
-                    wait = self.RETRY_BASE * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+                    # 短间隔 + 抖动: 失败是"连接被 WAF 抽样丢弃", 与请求内容无关,
+                    # 重试到成功为止(成功成簇出现)。不做过长退避以免拖慢整体。
+                    wait = self.RETRY_BASE * min(attempt, 3) + random.uniform(0, 1.0)
                     logger.warning(
-                        f"[fundflow] {stock_code} 第 {attempt} 次请求失败"
+                        f"[fundflow] {stock_code} 第 {attempt}/{self.MAX_ATTEMPTS} 次请求失败"
                         f"({type(e).__name__}), {wait:.1f}s 后重试"
                     )
                     time.sleep(wait)

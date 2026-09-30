@@ -16,6 +16,7 @@
 import akshare as ak
 import pandas as pd
 import logging
+import threading
 from datetime import datetime, timedelta
 from .base import BaseCollector, retry
 from .rate_limiter import socket_timeout
@@ -242,52 +243,85 @@ class EastmoneyCollector(BaseCollector):
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 公告数据采集失败：{str(e)}")
 
+    # 龙虎榜滚动回补窗口(自然日)。
+    # ⚠️ 不要把窗口写成"执行日单日"(today~today): 龙虎榜在 T 日收盘后才由交易所发布,
+    # 而本轮采集多为手工/低频触发 —— 单日窗口几乎必然错过上榜日, 且历史空洞永不回补。
+    # 实测(2026-09-30): 表内 0 行, 但自选股 2026-06/07 确有多次上榜记录。
+    # 与融资融券的自愈窗口同思路: 每次重拉最近 LHB_WINDOW_DAYS 天并 UPSERT, 幂等。
+    LHB_WINDOW_DAYS = 20
+    # 进程内缓存: 龙虎榜接口一次返回**全市场**明细, 22 只股票若各自请求会重复下载
+    # 同一份数据 22 次。这里按"窗口日"缓存一份, 同一次采集周期内复用(带锁保证
+    # 并发线程只下载一次)。仅保留最新窗口, 避免无界增长。
+    _lhb_cache = {}
+    _lhb_lock = threading.Lock()
+
+    def _fetch_lhb_market(self, start, end):
+        """取全市场龙虎榜(带进程内缓存); 返回 DataFrame 或 None。"""
+        key = (start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        with self._lhb_lock:
+            if key in self._lhb_cache:
+                return self._lhb_cache[key]
+            df = ak.stock_lhb_detail_em(start_date=key[0], end_date=key[1])
+            type(self)._lhb_cache = {key: df}     # 只留最新窗口
+            return df
+
     def collect_dragon_tiger(self, stock_code: str):
-        """通过AKShare采集龙虎榜数据"""
+        """采集龙虎榜数据(AKShare EM, 滚动窗口自愈)。
+
+        数据源一次按日期区间返回**全市场**上榜明细(每日数十至上千行), 此处按
+        自选股过滤后入库。同一只股票同一天可能因多个"上榜原因"出现多行 ——
+        用 list_type 承载上榜原因(截断 50 字符), 保证 PK
+        (stock_code, trade_date, list_type) 不会把多条不同原因静默覆盖成一条。
+        """
         try:
-            logger.info(f"[akshare] 开始采集 {stock_code} 龙虎榜")
-
             code = stock_code[2:]
-            today = datetime.now().strftime("%Y%m%d")
+            end = datetime.now()
+            start = end - timedelta(days=self.LHB_WINDOW_DAYS)
 
-            try:
-                df_lhb = ak.stock_lhb_detail_em(start_date=today, end_date=today)
+            df_lhb = self._fetch_lhb_market(start, end)
+            if df_lhb is None or df_lhb.empty:
+                logger.info(f"[akshare] {stock_code} 龙虎榜窗口 "
+                            f"{start:%Y-%m-%d}~{end:%Y-%m-%d} 无数据")
+                return
 
-                if not df_lhb.empty:
-                    df_lhb = df_lhb[df_lhb['代码'].astype(str) == code]
+            sub = df_lhb[df_lhb['代码'].astype(str) == code]
+            if sub.empty:
+                logger.info(f"[akshare] {stock_code} 龙虎榜窗口内未上榜")
+                return
 
-                    if not df_lhb.empty:
-                        # 事务保证: 龙虎榜批量写入原子化,避免部分成功部分失败
-                        try:
-                            with self.db_ops.transaction():
-                                for _, row in df_lhb.iterrows():
-                                    try:
-                                        self.db_ops.conn.execute("""
-                                        INSERT INTO dragon_tiger 
-                                        (stock_code, trade_date, list_type, reason, buy_amount, sell_amount, net_amount)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                                        ON CONFLICT (stock_code, trade_date, list_type) DO UPDATE SET
-                                            reason = EXCLUDED.reason,
-                                            buy_amount = EXCLUDED.buy_amount,
-                                            sell_amount = EXCLUDED.sell_amount,
-                                            net_amount = EXCLUDED.net_amount
-                                        """, (
-                                            stock_code,
-                                            pd.to_datetime(row['上榜日']).date(),
-                                            '上榜',
-                                            row.get('上榜原因'),
-                                            self._safe_get(row, '龙虎榜买入额'),
-                                            self._safe_get(row, '龙虎榜卖出额'),
-                                            self._safe_get(row, '龙虎榜净买额')
-                                        ))
-                                    except Exception as e:
-                                        logger.error(f"{stock_code} 龙虎榜单条插入失败：{str(e)}")
-                                        raise  # 触发外层事务回滚
-                            logger.info(f"[akshare] {stock_code} 龙虎榜数据完成")
-                        except Exception as e:
-                            logger.error(f"[akshare] {stock_code} 龙虎榜事务回滚: {e}")
-            except Exception as e:
-                logger.debug(f"获取龙虎榜详细数据失败：{str(e)}")
+            rows, seen = [], set()
+            for _, row in sub.iterrows():
+                reason = str(row.get('上榜原因') or '').strip() or '上榜'
+                list_type = reason[:50]     # PK 片段, 列宽 50
+                trade_date = pd.to_datetime(row['上榜日']).date()
+                if (trade_date, list_type) in seen:
+                    # 截断后 PK 冲突会导致 ON CONFLICT 静默覆盖, 显式告警
+                    logger.warning(f"[akshare] {stock_code} {trade_date} 龙虎榜 "
+                                   f"PK 重复('{list_type}'): 源端两条原因前 50 字相同, 仅保留一条")
+                seen.add((trade_date, list_type))
+                rows.append((
+                    stock_code, trade_date, list_type, reason,
+                    self._safe_get(row, '龙虎榜买入额'),
+                    self._safe_get(row, '龙虎榜卖出额'),
+                    self._safe_get(row, '龙虎榜净买额'),
+                ))
+
+            # 事务保证: 龙虎榜批量写入原子化, 避免部分成功部分失败
+            with self.db_ops.transaction():
+                for tup in rows:
+                    self.db_ops.conn.execute("""
+                        INSERT INTO dragon_tiger
+                        (stock_code, trade_date, list_type, reason,
+                         buy_amount, sell_amount, net_amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (stock_code, trade_date, list_type) DO UPDATE SET
+                            reason = EXCLUDED.reason,
+                            buy_amount = EXCLUDED.buy_amount,
+                            sell_amount = EXCLUDED.sell_amount,
+                            net_amount = EXCLUDED.net_amount
+                    """, list(tup))
+            logger.info(f"[akshare] {stock_code} 龙虎榜写入 {len(rows)} 行 "
+                        f"(窗口 {start:%Y-%m-%d}~{end:%Y-%m-%d})")
 
         except Exception as e:
             logger.error(f"[akshare] {stock_code} 龙虎榜采集失败：{str(e)}")
